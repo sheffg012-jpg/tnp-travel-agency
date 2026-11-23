@@ -21,8 +21,13 @@ import {
 } from 'lucide-react';
 import AdminPanel from './components/AdminPanel';
 
-const url = import.meta.env.VITE_SUPABASE_URL;
-const key = import.meta.env.VITE_SUPABASE_ANON_KEY;
+function normalizeSupabaseUrl(raw?: string): string {
+  if (!raw) return '';
+  return raw.trim().replace(/\/rest\/v1\/?$/i, '').replace(/\/+$/, '');
+}
+
+const url = normalizeSupabaseUrl(import.meta.env.VITE_SUPABASE_URL);
+const key = (import.meta.env.VITE_SUPABASE_ANON_KEY || '').trim();
 const db = url && key ? createClient(url, key) : null;
 const phone = import.meta.env.VITE_WHATSAPP_NUMBER || '250788697728';
 const email = import.meta.env.VITE_CONTACT_EMAIL || 'agencytnptravel@gmail.com';
@@ -231,12 +236,16 @@ export default function App() {
           details: f.details,
         }),
       });
-      const data = (await res.json()) as { booking?: { reference: string }; error?: string };
+      const data = (await res.json()) as {
+        booking?: { reference: string };
+        persisted?: 'supabase' | 'memory';
+        error?: string;
+      };
       if (!res.ok) {
         throw new Error(data.error || 'Could not submit inquiry.');
       }
 
-      if (db) {
+      if (db && data.persisted !== 'supabase') {
         await db.from('bookings').insert({
           customer_name: f.name,
           email: f.email,

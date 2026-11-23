@@ -2,6 +2,7 @@ import crypto from 'node:crypto';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import express, { type NextFunction, type Request, type Response } from 'express';
+import { createClient, type SupabaseClient } from '@supabase/supabase-js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const PORT = Number(process.env.PORT) || 3000;
@@ -68,6 +69,40 @@ interface ClaimedAdmin {
 interface AuthedRequest extends Request {
   adminUser?: { username: string; jti: string };
 }
+
+function normalizeSupabaseUrl(raw?: string): string {
+  if (!raw) return '';
+  return raw.trim().replace(/\/rest\/v1\/?$/i, '').replace(/\/+$/, '');
+}
+
+const supabaseUrl = normalizeSupabaseUrl(process.env.SUPABASE_URL || process.env.VITE_SUPABASE_URL);
+const supabaseAnonKey = (process.env.SUPABASE_ANON_KEY || process.env.VITE_SUPABASE_ANON_KEY || '').trim();
+const supabaseServiceKey = (process.env.SUPABASE_SERVICE_ROLE_KEY || '').trim();
+
+const supabasePublic: SupabaseClient | null =
+  supabaseUrl && (supabaseServiceKey || supabaseAnonKey)
+    ? createClient(supabaseUrl, supabaseServiceKey || supabaseAnonKey, {
+        auth: { persistSession: false, autoRefreshToken: false },
+      })
+    : null;
+
+const supabaseAdmin: SupabaseClient | null =
+  supabaseUrl && supabaseServiceKey
+    ? createClient(supabaseUrl, supabaseServiceKey, {
+        auth: { persistSession: false, autoRefreshToken: false },
+      })
+    : null;
+
+const DEFAULT_ICON_BY_NAME: Record<string, string> = {
+  'Air ticketing': 'Plane',
+  'Visa assistance': 'ShieldCheck',
+  'Hotel booking': 'Hotel',
+  'Car rental': 'Car',
+  'Tours & trip plans': 'MapPinned',
+  'Gorilla permits': 'Globe2',
+  'Study & work abroad': 'User',
+  'Money transfer': 'Wallet',
+};
 
 let claimedAdmin: ClaimedAdmin | null = null;
 const activeSessions = new Map<string, { username: string; exp: number }>();
@@ -207,6 +242,40 @@ function cleanStr(val: unknown, maxLen: number): string {
   return val.trim().slice(0, maxLen);
 }
 
+function mapSupabaseService(row: Record<string, unknown>): ServiceRecord {
+  const name = String(row.name || '');
+  return {
+    id: String(row.id),
+    name,
+    description: String(row.description || ''),
+    icon: typeof row.icon === 'string' && row.icon ? row.icon : DEFAULT_ICON_BY_NAME[name] || 'Globe2',
+    active: Boolean(row.active ?? true),
+    created_at: String(row.created_at || new Date().toISOString()),
+  };
+}
+
+function mapSupabaseBooking(row: Record<string, unknown>): BookingRecord {
+  const rawStatus = String(row.status || 'pending') as BookingStatus;
+  const rawCurr = String(row.currency || 'RWF').toUpperCase() as Currency;
+  return {
+    id: String(row.id),
+    reference: String(row.reference || ''),
+    customer_name: String(row.customer_name || ''),
+    email: String(row.email || ''),
+    phone: String(row.phone || ''),
+    service_type: String(row.service_type || ''),
+    destination: row.destination ? String(row.destination) : null,
+    travel_date: row.travel_date ? String(row.travel_date) : null,
+    details: String(row.details || ''),
+    status: BOOKING_STATUSES.includes(rawStatus) ? rawStatus : 'pending',
+    quoted_amount: row.quoted_amount !== null && row.quoted_amount !== undefined ? Number(row.quoted_amount) : null,
+    currency: CURRENCIES.includes(rawCurr) ? rawCurr : 'RWF',
+    staff_note: typeof row.staff_note === 'string' ? row.staff_note : '',
+    created_at: String(row.created_at || new Date().toISOString()),
+    updated_at: String(row.updated_at || row.created_at || new Date().toISOString()),
+  };
+}
+
 async function startServer(): Promise<void> {
   const app = express();
   app.set('trust proxy', 1);
@@ -219,15 +288,40 @@ async function startServer(): Promise<void> {
   });
 
   // Public catalog (active services & destinations)
-  app.get('/api/catalog', (_req, res) => {
+  app.get('/api/catalog', async (_req, res) => {
+    let resolvedServices = services.filter((s) => s.active);
+    let resolvedDestinations = destinations.filter((d) => d.active);
+
+    if (supabasePublic) {
+      try {
+        const [{ data: svcRows, error: svcErr }, { data: dstRows, error: dstErr }] = await Promise.all([
+          supabasePublic.from('services').select('*').eq('active', true).order('created_at', { ascending: true }),
+          supabasePublic.from('destinations').select('*').eq('active', true).order('name', { ascending: true }),
+        ]);
+
+        if (!svcErr && Array.isArray(svcRows) && svcRows.length > 0) {
+          resolvedServices = svcRows.map((r) => mapSupabaseService(r as Record<string, unknown>));
+        }
+        if (!dstErr && Array.isArray(dstRows) && dstRows.length > 0) {
+          resolvedDestinations = dstRows.map((r) => ({
+            id: String((r as Record<string, unknown>).id),
+            name: String((r as Record<string, unknown>).name),
+            active: Boolean((r as Record<string, unknown>).active ?? true),
+          }));
+        }
+      } catch {
+        // Fall back to default catalog if Supabase tables are not yet initialized
+      }
+    }
+
     res.json({
-      services: services.filter((s) => s.active),
-      destinations: destinations.filter((d) => d.active),
+      services: resolvedServices,
+      destinations: resolvedDestinations,
     });
   });
 
   // Public booking inquiry creation
-  app.post('/api/bookings', (req, res) => {
+  app.post('/api/bookings', async (req, res) => {
     const customerName = cleanStr(req.body?.customer_name, 120);
     const email = cleanStr(req.body?.email, 160);
     const phone = cleanStr(req.body?.phone, 40);
@@ -264,7 +358,34 @@ async function startServer(): Promise<void> {
       updated_at: now,
     };
 
-    bookings.unshift(record);
+    let persisted: 'supabase' | 'memory' = 'memory';
+
+    if (supabasePublic) {
+      try {
+        const { error } = await supabasePublic.from('bookings').insert({
+          id: record.id,
+          reference: record.reference,
+          customer_name: record.customer_name,
+          email: record.email,
+          phone: record.phone,
+          service_type: record.service_type,
+          destination: record.destination,
+          travel_date: record.travel_date,
+          details: record.details,
+          status: 'pending',
+        });
+        if (!error) {
+          persisted = 'supabase';
+        }
+      } catch {
+        // Fall back to in-memory store if Supabase insert fails
+      }
+    }
+
+    if (!supabaseAdmin) {
+      bookings.unshift(record);
+    }
+
     res.status(201).json({
       booking: {
         id: record.id,
@@ -272,6 +393,7 @@ async function startServer(): Promise<void> {
         status: record.status,
         created_at: record.created_at,
       },
+      persisted,
     });
   });
 
@@ -365,22 +487,41 @@ async function startServer(): Promise<void> {
   });
 
   // Admin bookings management
-  app.get('/api/admin/bookings', requireAdmin, (_req, res) => {
+  app.get('/api/admin/bookings', requireAdmin, async (_req, res) => {
+    if (supabaseAdmin) {
+      const { data, error } = await supabaseAdmin
+        .from('bookings')
+        .select('*')
+        .order('created_at', { ascending: false });
+
+      if (!error && Array.isArray(data)) {
+        const list = data.map((r) => mapSupabaseBooking(r as Record<string, unknown>));
+        const stats = {
+          total: list.length,
+          pending: list.filter((b) => b.status === 'pending').length,
+          inProgress: list.filter((b) => b.status === 'reviewing' || b.status === 'awaiting_payment').length,
+          confirmed: list.filter((b) => b.status === 'confirmed' || b.status === 'completed').length,
+        };
+        res.json({ bookings: list, stats, storage: 'supabase' });
+        return;
+      }
+    }
+
     const stats = {
       total: bookings.length,
       pending: bookings.filter((b) => b.status === 'pending').length,
       inProgress: bookings.filter((b) => b.status === 'reviewing' || b.status === 'awaiting_payment').length,
       confirmed: bookings.filter((b) => b.status === 'confirmed' || b.status === 'completed').length,
     };
-    res.json({ bookings, stats });
+    res.json({
+      bookings,
+      stats,
+      storage: supabasePublic ? 'supabase-public-only' : 'memory',
+    });
   });
 
-  app.patch('/api/admin/bookings/:id', requireAdmin, (req, res) => {
-    const target = bookings.find((b) => b.id === req.params.id);
-    if (!target) {
-      res.status(404).json({ error: 'Booking not found.' });
-      return;
-    }
+  app.patch('/api/admin/bookings/:id', requireAdmin, async (req, res) => {
+    const updates: Record<string, unknown> = {};
 
     if (req.body?.status !== undefined) {
       const nextStatus = cleanStr(req.body.status, 30) as BookingStatus;
@@ -388,19 +529,19 @@ async function startServer(): Promise<void> {
         res.status(400).json({ error: 'Invalid booking status.' });
         return;
       }
-      target.status = nextStatus;
+      updates.status = nextStatus;
     }
 
     if (req.body?.quoted_amount !== undefined) {
       if (req.body.quoted_amount === null || req.body.quoted_amount === '') {
-        target.quoted_amount = null;
+        updates.quoted_amount = null;
       } else {
         const amt = Number(req.body.quoted_amount);
         if (!Number.isFinite(amt) || amt < 0) {
           res.status(400).json({ error: 'Quoted amount must be a valid positive number.' });
           return;
         }
-        target.quoted_amount = Math.round(amt * 100) / 100;
+        updates.quoted_amount = Math.round(amt * 100) / 100;
       }
     }
 
@@ -410,18 +551,68 @@ async function startServer(): Promise<void> {
         res.status(400).json({ error: 'Unsupported currency.' });
         return;
       }
-      target.currency = nextCurrency;
+      updates.currency = nextCurrency;
     }
 
     if (req.body?.staff_note !== undefined) {
-      target.staff_note = cleanStr(req.body.staff_note, 1000);
+      updates.staff_note = cleanStr(req.body.staff_note, 1000);
     }
 
+    if (supabaseAdmin) {
+      let { data, error } = await supabaseAdmin
+        .from('bookings')
+        .update(updates)
+        .eq('id', req.params.id)
+        .select('*')
+        .single();
+
+      // Retry without staff_note if user ran 001_initial_schema.sql without 002
+      if (error && 'staff_note' in updates) {
+        const { staff_note: _ignored, ...withoutNote } = updates;
+        const retry = await supabaseAdmin
+          .from('bookings')
+          .update(withoutNote)
+          .eq('id', req.params.id)
+          .select('*')
+          .single();
+        data = retry.data;
+        error = retry.error;
+      }
+
+      if (!error && data) {
+        res.json({ booking: mapSupabaseBooking(data as Record<string, unknown>) });
+        return;
+      }
+      if (error) {
+        res.status(404).json({ error: error.message || 'Booking not found.' });
+        return;
+      }
+    }
+
+    const target = bookings.find((b) => b.id === req.params.id);
+    if (!target) {
+      res.status(404).json({ error: 'Booking not found.' });
+      return;
+    }
+    if (updates.status !== undefined) target.status = updates.status as BookingStatus;
+    if (updates.quoted_amount !== undefined) target.quoted_amount = updates.quoted_amount as number | null;
+    if (updates.currency !== undefined) target.currency = updates.currency as Currency;
+    if (updates.staff_note !== undefined) target.staff_note = updates.staff_note as string;
     target.updated_at = new Date().toISOString();
     res.json({ booking: target });
   });
 
-  app.delete('/api/admin/bookings/:id', requireAdmin, (req, res) => {
+  app.delete('/api/admin/bookings/:id', requireAdmin, async (req, res) => {
+    if (supabaseAdmin) {
+      const { error } = await supabaseAdmin.from('bookings').delete().eq('id', req.params.id);
+      if (error) {
+        res.status(400).json({ error: error.message || 'Could not delete booking.' });
+        return;
+      }
+      res.json({ ok: true });
+      return;
+    }
+
     const idx = bookings.findIndex((b) => b.id === req.params.id);
     if (idx === -1) {
       res.status(404).json({ error: 'Booking not found.' });
@@ -432,11 +623,30 @@ async function startServer(): Promise<void> {
   });
 
   // Admin services management
-  app.get('/api/admin/services', requireAdmin, (_req, res) => {
+  app.get('/api/admin/services', requireAdmin, async (_req, res) => {
+    if (supabaseAdmin) {
+      const { data, error } = await supabaseAdmin
+        .from('services')
+        .select('*')
+        .order('created_at', { ascending: true });
+      if (!error && Array.isArray(data)) {
+        res.json({ services: data.map((r) => mapSupabaseService(r as Record<string, unknown>)) });
+        return;
+      }
+    } else if (supabasePublic) {
+      const { data, error } = await supabasePublic
+        .from('services')
+        .select('*')
+        .order('created_at', { ascending: true });
+      if (!error && Array.isArray(data) && data.length > 0) {
+        res.json({ services: data.map((r) => mapSupabaseService(r as Record<string, unknown>)) });
+        return;
+      }
+    }
     res.json({ services });
   });
 
-  app.post('/api/admin/services', requireAdmin, (req, res) => {
+  app.post('/api/admin/services', requireAdmin, async (req, res) => {
     const name = cleanStr(req.body?.name, 80);
     const description = cleanStr(req.body?.description, 240);
     const icon = cleanStr(req.body?.icon, 40) || 'Globe2';
@@ -444,6 +654,32 @@ async function startServer(): Promise<void> {
       res.status(400).json({ error: 'Service name and description are required.' });
       return;
     }
+
+    if (supabaseAdmin) {
+      let { data, error } = await supabaseAdmin
+        .from('services')
+        .insert({ name, description, icon, active: true })
+        .select('*')
+        .single();
+
+      if (error) {
+        const retry = await supabaseAdmin
+          .from('services')
+          .insert({ name, description, active: true })
+          .select('*')
+          .single();
+        data = retry.data;
+        error = retry.error;
+      }
+
+      if (error) {
+        res.status(error.code === '23505' ? 409 : 400).json({ error: error.message });
+        return;
+      }
+      res.status(201).json({ service: mapSupabaseService(data as Record<string, unknown>) });
+      return;
+    }
+
     if (services.some((s) => s.name.toLowerCase() === name.toLowerCase())) {
       res.status(409).json({ error: 'Service already exists.' });
       return;
@@ -460,31 +696,103 @@ async function startServer(): Promise<void> {
     res.status(201).json({ service: created });
   });
 
-  app.patch('/api/admin/services/:id', requireAdmin, (req, res) => {
+  app.patch('/api/admin/services/:id', requireAdmin, async (req, res) => {
+    const updates: Record<string, unknown> = {};
+    if (typeof req.body?.active === 'boolean') updates.active = req.body.active;
+    if (typeof req.body?.name === 'string' && req.body.name.trim()) updates.name = cleanStr(req.body.name, 80);
+    if (typeof req.body?.description === 'string' && req.body.description.trim()) {
+      updates.description = cleanStr(req.body.description, 240);
+    }
+
+    if (supabaseAdmin) {
+      const { data, error } = await supabaseAdmin
+        .from('services')
+        .update(updates)
+        .eq('id', req.params.id)
+        .select('*')
+        .single();
+      if (error || !data) {
+        res.status(404).json({ error: error?.message || 'Service not found.' });
+        return;
+      }
+      res.json({ service: mapSupabaseService(data as Record<string, unknown>) });
+      return;
+    }
+
     const target = services.find((s) => s.id === req.params.id);
     if (!target) {
       res.status(404).json({ error: 'Service not found.' });
       return;
     }
-    if (typeof req.body?.active === 'boolean') target.active = req.body.active;
-    if (typeof req.body?.name === 'string' && req.body.name.trim()) target.name = cleanStr(req.body.name, 80);
-    if (typeof req.body?.description === 'string' && req.body.description.trim()) {
-      target.description = cleanStr(req.body.description, 240);
-    }
+    if (typeof updates.active === 'boolean') target.active = updates.active;
+    if (typeof updates.name === 'string') target.name = updates.name;
+    if (typeof updates.description === 'string') target.description = updates.description;
     res.json({ service: target });
   });
 
   // Admin destinations management
-  app.get('/api/admin/destinations', requireAdmin, (_req, res) => {
+  app.get('/api/admin/destinations', requireAdmin, async (_req, res) => {
+    if (supabaseAdmin) {
+      const { data, error } = await supabaseAdmin
+        .from('destinations')
+        .select('*')
+        .order('name', { ascending: true });
+      if (!error && Array.isArray(data)) {
+        res.json({
+          destinations: data.map((r) => ({
+            id: String((r as Record<string, unknown>).id),
+            name: String((r as Record<string, unknown>).name),
+            active: Boolean((r as Record<string, unknown>).active ?? true),
+          })),
+        });
+        return;
+      }
+    } else if (supabasePublic) {
+      const { data, error } = await supabasePublic
+        .from('destinations')
+        .select('*')
+        .order('name', { ascending: true });
+      if (!error && Array.isArray(data) && data.length > 0) {
+        res.json({
+          destinations: data.map((r) => ({
+            id: String((r as Record<string, unknown>).id),
+            name: String((r as Record<string, unknown>).name),
+            active: Boolean((r as Record<string, unknown>).active ?? true),
+          })),
+        });
+        return;
+      }
+    }
     res.json({ destinations });
   });
 
-  app.post('/api/admin/destinations', requireAdmin, (req, res) => {
+  app.post('/api/admin/destinations', requireAdmin, async (req, res) => {
     const name = cleanStr(req.body?.name, 80);
     if (!name) {
       res.status(400).json({ error: 'Destination name is required.' });
       return;
     }
+
+    if (supabaseAdmin) {
+      const { data, error } = await supabaseAdmin
+        .from('destinations')
+        .insert({ name, active: true })
+        .select('*')
+        .single();
+      if (error) {
+        res.status(error.code === '23505' ? 409 : 400).json({ error: error.message });
+        return;
+      }
+      res.status(201).json({
+        destination: {
+          id: String((data as Record<string, unknown>).id),
+          name: String((data as Record<string, unknown>).name),
+          active: Boolean((data as Record<string, unknown>).active ?? true),
+        },
+      });
+      return;
+    }
+
     if (destinations.some((d) => d.name.toLowerCase() === name.toLowerCase())) {
       res.status(409).json({ error: 'Destination already exists.' });
       return;
@@ -498,14 +806,39 @@ async function startServer(): Promise<void> {
     res.status(201).json({ destination: created });
   });
 
-  app.patch('/api/admin/destinations/:id', requireAdmin, (req, res) => {
+  app.patch('/api/admin/destinations/:id', requireAdmin, async (req, res) => {
+    const updates: Record<string, unknown> = {};
+    if (typeof req.body?.active === 'boolean') updates.active = req.body.active;
+    if (typeof req.body?.name === 'string' && req.body.name.trim()) updates.name = cleanStr(req.body.name, 80);
+
+    if (supabaseAdmin) {
+      const { data, error } = await supabaseAdmin
+        .from('destinations')
+        .update(updates)
+        .eq('id', req.params.id)
+        .select('*')
+        .single();
+      if (error || !data) {
+        res.status(404).json({ error: error?.message || 'Destination not found.' });
+        return;
+      }
+      res.json({
+        destination: {
+          id: String((data as Record<string, unknown>).id),
+          name: String((data as Record<string, unknown>).name),
+          active: Boolean((data as Record<string, unknown>).active ?? true),
+        },
+      });
+      return;
+    }
+
     const target = destinations.find((d) => d.id === req.params.id);
     if (!target) {
       res.status(404).json({ error: 'Destination not found.' });
       return;
     }
-    if (typeof req.body?.active === 'boolean') target.active = req.body.active;
-    if (typeof req.body?.name === 'string' && req.body.name.trim()) target.name = cleanStr(req.body.name, 80);
+    if (typeof updates.active === 'boolean') target.active = updates.active;
+    if (typeof updates.name === 'string') target.name = updates.name;
     res.json({ destination: target });
   });
 
