@@ -60,6 +60,16 @@ interface DestinationRecord {
   active: boolean;
 }
 
+interface SocialLinkRecord {
+  id: string;
+  platform: string;
+  label: string;
+  url: string;
+  active: boolean;
+  sort_order: number;
+  created_at: string;
+}
+
 interface ClaimedAdmin {
   username: string;
   salt: string;
@@ -109,6 +119,7 @@ const activeSessions = new Map<string, { username: string; exp: number }>();
 const loginAttempts = new Map<string, { count: number; resetAt: number }>();
 
 const bookings: BookingRecord[] = [];
+const socialLinks: SocialLinkRecord[] = [];
 
 const services: ServiceRecord[] = [
   { id: 'svc-1', name: 'Air ticketing', description: 'Flight inquiries and ticketing support.', icon: 'Plane', active: true, created_at: new Date().toISOString() },
@@ -153,8 +164,22 @@ function isEnvConfigured(): boolean {
   return Boolean(process.env.ADMIN_PASSWORD && process.env.ADMIN_PASSWORD.length > 0);
 }
 
-function isAdminConfigured(): boolean {
-  return isEnvConfigured() || claimedAdmin !== null;
+async function isAdminConfigured(): Promise<boolean> {
+  if (isEnvConfigured() || claimedAdmin !== null) return true;
+  if (supabaseAdmin) {
+    try {
+      const [{ data: accRows }, { data: profRows }] = await Promise.all([
+        supabaseAdmin.from('admin_accounts').select('id').eq('active', true).limit(1),
+        supabaseAdmin.from('profiles').select('id').in('role', ['admin', 'super_admin']).limit(1),
+      ]);
+      if ((accRows && accRows.length > 0) || (profRows && profRows.length > 0)) {
+        return true;
+      }
+    } catch {
+      // Table may not exist yet
+    }
+  }
+  return false;
 }
 
 function issueSessionToken(username: string): string {
@@ -242,6 +267,21 @@ function cleanStr(val: unknown, maxLen: number): string {
   return val.trim().slice(0, maxLen);
 }
 
+function validateHttpUrl(raw: unknown): string | null {
+  if (typeof raw !== 'string') return null;
+  const trimmed = raw.trim();
+  if (!trimmed || trimmed.length > 500) return null;
+  try {
+    const parsed = new URL(trimmed);
+    if (parsed.protocol !== 'https:' && parsed.protocol !== 'http:') {
+      return null;
+    }
+    return parsed.toString();
+  } catch {
+    return null;
+  }
+}
+
 function mapSupabaseService(row: Record<string, unknown>): ServiceRecord {
   const name = String(row.name || '');
   return {
@@ -276,6 +316,56 @@ function mapSupabaseBooking(row: Record<string, unknown>): BookingRecord {
   };
 }
 
+function mapSupabaseSocialLink(row: Record<string, unknown>): SocialLinkRecord {
+  return {
+    id: String(row.id),
+    platform: String(row.platform || ''),
+    label: String(row.label || row.platform || ''),
+    url: String(row.url || ''),
+    active: Boolean(row.active ?? true),
+    sort_order: Number(row.sort_order ?? 0),
+    created_at: String(row.created_at || new Date().toISOString()),
+  };
+}
+
+async function verifySupabaseAuthAdmin(email: string, password: string): Promise<string | null> {
+  if (!supabaseUrl || !supabaseAnonKey) return null;
+  try {
+    const authClient = createClient(supabaseUrl, supabaseAnonKey, {
+      auth: { persistSession: false, autoRefreshToken: false },
+    });
+    const { data, error } = await authClient.auth.signInWithPassword({ email, password });
+    if (error || !data.user || !data.session) return null;
+
+    if (supabaseAdmin) {
+      const { data: prof } = await supabaseAdmin
+        .from('profiles')
+        .select('role')
+        .eq('id', data.user.id)
+        .maybeSingle();
+      if (prof?.role === 'admin' || prof?.role === 'super_admin') {
+        return data.user.email || email;
+      }
+    } else {
+      const userClient = createClient(supabaseUrl, supabaseAnonKey, {
+        global: { headers: { Authorization: `Bearer ${data.session.access_token}` } },
+        auth: { persistSession: false, autoRefreshToken: false },
+      });
+      const { data: prof } = await userClient
+        .from('profiles')
+        .select('role')
+        .eq('id', data.user.id)
+        .maybeSingle();
+      if (prof?.role === 'admin' || prof?.role === 'super_admin') {
+        return data.user.email || email;
+      }
+    }
+    return null;
+  } catch {
+    return null;
+  }
+}
+
 async function startServer(): Promise<void> {
   const app = express();
   app.set('trust proxy', 1);
@@ -287,16 +377,22 @@ async function startServer(): Promise<void> {
     next();
   });
 
-  // Public catalog (active services & destinations)
+  // Public catalog (active services, destinations, and social links)
   app.get('/api/catalog', async (_req, res) => {
     let resolvedServices = services.filter((s) => s.active);
     let resolvedDestinations = destinations.filter((d) => d.active);
+    let resolvedSocialLinks = socialLinks.filter((l) => l.active);
 
     if (supabasePublic) {
       try {
-        const [{ data: svcRows, error: svcErr }, { data: dstRows, error: dstErr }] = await Promise.all([
+        const [
+          { data: svcRows, error: svcErr },
+          { data: dstRows, error: dstErr },
+          { data: socRows, error: socErr },
+        ] = await Promise.all([
           supabasePublic.from('services').select('*').eq('active', true).order('created_at', { ascending: true }),
           supabasePublic.from('destinations').select('*').eq('active', true).order('name', { ascending: true }),
+          supabasePublic.from('social_links').select('*').eq('active', true).order('sort_order', { ascending: true }).order('created_at', { ascending: true }),
         ]);
 
         if (!svcErr && Array.isArray(svcRows) && svcRows.length > 0) {
@@ -309,14 +405,18 @@ async function startServer(): Promise<void> {
             active: Boolean((r as Record<string, unknown>).active ?? true),
           }));
         }
+        if (!socErr && Array.isArray(socRows)) {
+          resolvedSocialLinks = socRows.map((r) => mapSupabaseSocialLink(r as Record<string, unknown>));
+        }
       } catch {
-        // Fall back to default catalog if Supabase tables are not yet initialized
+        // Fall back to default/memory catalog if Supabase tables are not yet initialized
       }
     }
 
     res.json({
       services: resolvedServices,
       destinations: resolvedDestinations,
+      socialLinks: resolvedSocialLinks,
     });
   });
 
@@ -398,59 +498,78 @@ async function startServer(): Promise<void> {
   });
 
   // Admin auth status (never returns credentials or hints)
-  app.get('/api/admin/status', (req, res) => {
+  app.get('/api/admin/status', async (req, res) => {
     const token = extractBearerToken(req);
     const verified = token ? verifySessionToken(token) : null;
+    const configured = await isAdminConfigured();
     res.json({
-      configured: isAdminConfigured(),
+      configured,
       authenticated: Boolean(verified),
       username: verified?.username ?? null,
     });
   });
 
-  // One-time admin initialization when env credentials are not set
-  app.post('/api/admin/setup', (req, res) => {
+  // One-time admin initialization (persists in Supabase admin_accounts when available)
+  app.post('/api/admin/setup', async (req, res) => {
     if (!checkRateLimit(req)) {
       res.status(429).json({ error: 'Too many attempts. Please try again later.' });
       return;
     }
-    if (isAdminConfigured()) {
+    if (await isAdminConfigured()) {
       res.status(409).json({ error: 'Admin access is already configured.' });
       return;
     }
 
-    const username = cleanStr(req.body?.username, 60);
+    const username = cleanStr(req.body?.username, 120).toLowerCase();
     const password = typeof req.body?.password === 'string' ? req.body.password : '';
 
     if (username.length < 2 || password.length < 5) {
-      res.status(400).json({ error: 'Username (min 2 chars) and password (min 5 chars) are required.' });
+      res.status(400).json({ error: 'Email/username (min 2 chars) and password (min 5 chars) are required.' });
       return;
     }
 
     const salt = crypto.randomBytes(16).toString('hex');
     const hash = hashPassword(password, salt);
-    claimedAdmin = { username, salt, hash };
+
+    let storedInSupabase = false;
+    if (supabaseAdmin) {
+      try {
+        const { error } = await supabaseAdmin.from('admin_accounts').insert({
+          email: username,
+          password_hash: hash,
+          password_salt: salt,
+          role: 'super_admin',
+          active: true,
+        });
+        if (!error) {
+          storedInSupabase = true;
+        }
+      } catch {
+        // Fall back to in-memory claimedAdmin if admin_accounts table does not exist yet
+      }
+    }
+
+    if (!storedInSupabase) {
+      claimedAdmin = { username, salt, hash };
+    }
 
     const token = issueSessionToken(username);
-    res.status(201).json({ token, username });
+    res.status(201).json({ token, username, storedInSupabase });
   });
 
-  // Admin login
-  app.post('/api/admin/login', (req, res) => {
+  // Admin login (supports env credentials, Supabase admin_accounts, Supabase Auth + profiles, and fallback claim)
+  app.post('/api/admin/login', async (req, res) => {
     if (!checkRateLimit(req)) {
       res.status(429).json({ error: 'Too many login attempts. Please try again later.' });
       return;
     }
-    if (!isAdminConfigured()) {
-      res.status(409).json({ error: 'Admin credentials are not initialized yet.' });
-      return;
-    }
 
-    const username = cleanStr(req.body?.username, 60);
+    const username = cleanStr(req.body?.username, 120);
+    const normalizedEmail = username.toLowerCase();
     const password = typeof req.body?.password === 'string' ? req.body.password : '';
 
     if (!username || !password) {
-      res.status(400).json({ error: 'Username and password are required.' });
+      res.status(400).json({ error: 'Email/username and password are required.' });
       return;
     }
 
@@ -460,17 +579,53 @@ async function startServer(): Promise<void> {
     if (isEnvConfigured()) {
       const expectedUser = (process.env.ADMIN_USERNAME || 'admin').trim();
       const expectedPass = process.env.ADMIN_PASSWORD || '';
-      valid = safeEqualText(username, expectedUser) && safeEqualText(password, expectedPass);
+      valid = safeEqualText(normalizedEmail, expectedUser.toLowerCase()) && safeEqualText(password, expectedPass);
       authedUsername = expectedUser;
-    } else if (claimedAdmin) {
-      valid =
-        safeEqualText(username, claimedAdmin.username) &&
-        verifyScryptPassword(password, claimedAdmin.salt, claimedAdmin.hash);
-      authedUsername = claimedAdmin.username;
+    }
+
+    if (!valid && supabaseAdmin) {
+      try {
+        const { data: acc } = await supabaseAdmin
+          .from('admin_accounts')
+          .select('email, password_hash, password_salt, active')
+          .eq('email', normalizedEmail)
+          .maybeSingle();
+
+        if (acc && acc.active !== false && typeof acc.password_hash === 'string' && typeof acc.password_salt === 'string') {
+          if (verifyScryptPassword(password, acc.password_salt, acc.password_hash)) {
+            valid = true;
+            authedUsername = String(acc.email);
+          }
+        }
+      } catch {
+        // Continue to Supabase Auth / claimedAdmin check
+      }
+    }
+
+    if (!valid && supabasePublic && normalizedEmail.includes('@')) {
+      const supabaseAuthUser = await verifySupabaseAuthAdmin(normalizedEmail, password);
+      if (supabaseAuthUser) {
+        valid = true;
+        authedUsername = supabaseAuthUser;
+      }
+    }
+
+    if (!valid && claimedAdmin) {
+      if (
+        safeEqualText(normalizedEmail, claimedAdmin.username.toLowerCase()) &&
+        verifyScryptPassword(password, claimedAdmin.salt, claimedAdmin.hash)
+      ) {
+        valid = true;
+        authedUsername = claimedAdmin.username;
+      }
     }
 
     if (!valid) {
-      res.status(401).json({ error: 'Invalid username or password.' });
+      if (!(await isAdminConfigured()) && !supabasePublic) {
+        res.status(409).json({ error: 'Admin credentials are not initialized yet.' });
+        return;
+      }
+      res.status(401).json({ error: 'Invalid email/username or password.' });
       return;
     }
 
@@ -566,7 +721,6 @@ async function startServer(): Promise<void> {
         .select('*')
         .single();
 
-      // Retry without staff_note if user ran 001_initial_schema.sql without 002
       if (error && 'staff_note' in updates) {
         const { staff_note: _ignored, ...withoutNote } = updates;
         const retry = await supabaseAdmin
@@ -840,6 +994,144 @@ async function startServer(): Promise<void> {
     if (typeof updates.active === 'boolean') target.active = updates.active;
     if (typeof updates.name === 'string') target.name = updates.name;
     res.json({ destination: target });
+  });
+
+  // Admin social media links management
+  app.get('/api/admin/social-links', requireAdmin, async (_req, res) => {
+    if (supabaseAdmin) {
+      const { data, error } = await supabaseAdmin
+        .from('social_links')
+        .select('*')
+        .order('sort_order', { ascending: true })
+        .order('created_at', { ascending: true });
+      if (!error && Array.isArray(data)) {
+        res.json({ socialLinks: data.map((r) => mapSupabaseSocialLink(r as Record<string, unknown>)) });
+        return;
+      }
+    } else if (supabasePublic) {
+      const { data, error } = await supabasePublic
+        .from('social_links')
+        .select('*')
+        .order('sort_order', { ascending: true })
+        .order('created_at', { ascending: true });
+      if (!error && Array.isArray(data)) {
+        res.json({ socialLinks: data.map((r) => mapSupabaseSocialLink(r as Record<string, unknown>)) });
+        return;
+      }
+    }
+    res.json({ socialLinks });
+  });
+
+  app.post('/api/admin/social-links', requireAdmin, async (req, res) => {
+    const platform = cleanStr(req.body?.platform, 60);
+    const label = cleanStr(req.body?.label, 120) || platform;
+    const validUrl = validateHttpUrl(req.body?.url);
+
+    if (!platform) {
+      res.status(400).json({ error: 'Social media platform is required.' });
+      return;
+    }
+    if (!validUrl) {
+      res.status(400).json({ error: 'Please provide a valid URL starting with https:// or http://' });
+      return;
+    }
+
+    if (supabaseAdmin) {
+      const { data, error } = await supabaseAdmin
+        .from('social_links')
+        .insert({
+          platform,
+          label,
+          url: validUrl,
+          active: true,
+          sort_order: socialLinks.length,
+        })
+        .select('*')
+        .single();
+      if (error) {
+        res.status(400).json({ error: error.message });
+        return;
+      }
+      res.status(201).json({ socialLink: mapSupabaseSocialLink(data as Record<string, unknown>) });
+      return;
+    }
+
+    const created: SocialLinkRecord = {
+      id: `soc-${crypto.randomBytes(4).toString('hex')}`,
+      platform,
+      label,
+      url: validUrl,
+      active: true,
+      sort_order: socialLinks.length,
+      created_at: new Date().toISOString(),
+    };
+    socialLinks.push(created);
+    res.status(201).json({ socialLink: created });
+  });
+
+  app.patch('/api/admin/social-links/:id', requireAdmin, async (req, res) => {
+    const updates: Record<string, unknown> = {};
+    if (typeof req.body?.active === 'boolean') updates.active = req.body.active;
+    if (typeof req.body?.platform === 'string' && req.body.platform.trim()) {
+      updates.platform = cleanStr(req.body.platform, 60);
+    }
+    if (typeof req.body?.label === 'string' && req.body.label.trim()) {
+      updates.label = cleanStr(req.body.label, 120);
+    }
+    if (req.body?.url !== undefined) {
+      const validUrl = validateHttpUrl(req.body.url);
+      if (!validUrl) {
+        res.status(400).json({ error: 'Please provide a valid URL starting with https:// or http://' });
+        return;
+      }
+      updates.url = validUrl;
+    }
+
+    if (supabaseAdmin) {
+      const { data, error } = await supabaseAdmin
+        .from('social_links')
+        .update(updates)
+        .eq('id', req.params.id)
+        .select('*')
+        .single();
+      if (error || !data) {
+        res.status(404).json({ error: error?.message || 'Social link not found.' });
+        return;
+      }
+      res.json({ socialLink: mapSupabaseSocialLink(data as Record<string, unknown>) });
+      return;
+    }
+
+    const target = socialLinks.find((l) => l.id === req.params.id);
+    if (!target) {
+      res.status(404).json({ error: 'Social link not found.' });
+      return;
+    }
+    if (typeof updates.active === 'boolean') target.active = updates.active;
+    if (typeof updates.platform === 'string') target.platform = updates.platform;
+    if (typeof updates.label === 'string') target.label = updates.label;
+    if (typeof updates.url === 'string') target.url = updates.url;
+    res.json({ socialLink: target });
+  });
+
+  app.delete('/api/admin/social-links/:id', requireAdmin, async (req, res) => {
+    if (supabaseAdmin) {
+      const { error } = await supabaseAdmin.from('social_links').delete().eq('id', req.params.id);
+      if (error) {
+        res.status(400).json({ error: error.message || 'Could not delete social link.' });
+        return;
+      }
+      res.json({ ok: true });
+      return;
+    }
+
+    const idx = socialLinks.findIndex((l) => l.id === req.params.id);
+    if (idx === -1) {
+      res.status(404).json({ error: 'Social link not found.' });
+      return;
+    }
+    socialLinks.splice(idx, 1);
+    res.json({ ok: true });
   });
 
   // Return JSON 404 for unknown API routes

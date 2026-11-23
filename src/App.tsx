@@ -4,6 +4,7 @@ import {
   ArrowRight,
   Car,
   CheckCircle2,
+  ExternalLink,
   Globe2,
   Hotel,
   Lock,
@@ -13,13 +14,14 @@ import {
   MessageCircle,
   Plane,
   Send,
+  Share2,
   ShieldCheck,
   User,
   Wallet,
   X,
   type LucideProps,
 } from 'lucide-react';
-import AdminPanel from './components/AdminPanel';
+import AdminPanel, { type SocialLinkItem } from './components/AdminPanel';
 
 function normalizeSupabaseUrl(raw?: string): string {
   if (!raw) return '';
@@ -77,6 +79,15 @@ const DEFAULT_DESTINATIONS: CatalogDestination[] = [
   { id: 'dst-8', name: 'United States' },
 ];
 
+function isSafeHttpUrl(rawUrl: string): boolean {
+  try {
+    const parsed = new URL(rawUrl);
+    return parsed.protocol === 'https:' || parsed.protocol === 'http:';
+  } catch {
+    return false;
+  }
+}
+
 export default function App() {
   const [menu, setMenu] = useState(false);
   const [booking, setBooking] = useState(false);
@@ -85,6 +96,7 @@ export default function App() {
 
   const [services, setServices] = useState<CatalogService[]>(DEFAULT_SERVICES);
   const [destinations, setDestinations] = useState<CatalogDestination[]>(DEFAULT_DESTINATIONS);
+  const [socialLinks, setSocialLinks] = useState<SocialLinkItem[]>([]);
 
   const [msg, setMsg] = useState('');
   const [submittedWaLink, setSubmittedWaLink] = useState('');
@@ -103,6 +115,7 @@ export default function App() {
   const [adminToken, setAdminToken] = useState<string | null>(null);
   const [adminUsername, setAdminUsername] = useState<string>('');
   const [adminConfigured, setAdminConfigured] = useState<boolean | null>(null);
+  const [forceLoginMode, setForceLoginMode] = useState(false);
   const [authUser, setAuthUser] = useState('');
   const [authPass, setAuthPass] = useState('');
   const [authConfirm, setAuthConfirm] = useState('');
@@ -122,12 +135,16 @@ export default function App() {
       const data = (await res.json()) as {
         services?: CatalogService[];
         destinations?: CatalogDestination[];
+        socialLinks?: SocialLinkItem[];
       };
       if (Array.isArray(data.services) && data.services.length > 0) {
         setServices(data.services);
       }
       if (Array.isArray(data.destinations) && data.destinations.length > 0) {
         setDestinations(data.destinations);
+      }
+      if (Array.isArray(data.socialLinks)) {
+        setSocialLinks(data.socialLinks.filter((l) => isSafeHttpUrl(l.url)));
       }
     } catch {
       // Keep default catalog if server is restarting
@@ -147,6 +164,7 @@ export default function App() {
     setAuthUser('');
     setAuthPass('');
     setAuthConfirm('');
+    setForceLoginMode(false);
     setStaffModal(true);
     try {
       const res = await fetch('/api/admin/status');
@@ -161,20 +179,20 @@ export default function App() {
     }
   }
 
+  const isSetupView = adminConfigured === false && !forceLoginMode;
+
   async function handleAdminAuth(e: React.FormEvent) {
     e.preventDefault();
     setAuthError('');
 
-    if (adminConfigured === false) {
-      if (authPass !== authConfirm) {
-        setAuthError('Passwords do not match.');
-        return;
-      }
+    if (isSetupView && authPass !== authConfirm) {
+      setAuthError('Passwords do not match.');
+      return;
     }
 
     setAuthBusy(true);
     try {
-      const endpoint = adminConfigured === false ? '/api/admin/setup' : '/api/admin/login';
+      const endpoint = isSetupView ? '/api/admin/setup' : '/api/admin/login';
       const res = await fetch(endpoint, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -188,6 +206,7 @@ export default function App() {
       setAdminToken(data.token);
       setAdminUsername(data.username || authUser.trim());
       setAdminConfigured(true);
+      setForceLoginMode(false);
       setAuthPass('');
       setAuthConfirm('');
       setStaffModal(false);
@@ -494,6 +513,29 @@ export default function App() {
               in <i>mind?</i>
             </h2>
             <p>Talk to our team and tell us where you want to go.</p>
+            {socialLinks.length > 0 && (
+              <div className="social-public-wrap">
+                <small className="eyebrow">FOLLOW TNP</small>
+                <div className="social-public-grid">
+                  {socialLinks.map((link) => (
+                    <a
+                      key={link.id}
+                      href={link.url}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="social-public-btn"
+                    >
+                      <Share2 size={15} />
+                      <span>
+                        <b>{link.platform}</b>
+                        {link.label && link.label !== link.platform && <small>{link.label}</small>}
+                      </span>
+                      <ExternalLink size={14} />
+                    </a>
+                  ))}
+                </div>
+              </div>
+            )}
           </div>
           <div className="contact-card">
             <a href={wa} target="_blank" rel="noreferrer">
@@ -526,7 +568,23 @@ export default function App() {
 
       <footer>
         <img src="/tnp-logo.jpg" alt="TNP Travel Agency" />
-        <span>© {new Date().getFullYear()} TNP Travel Agency. Explore the World with TNP.</span>
+        <div className="footer-center">
+          <span>© {new Date().getFullYear()} TNP Travel Agency. Explore the World with TNP.</span>
+          {socialLinks.length > 0 && (
+            <div className="footer-socials">
+              {socialLinks.map((link) => (
+                <a
+                  key={link.id}
+                  href={link.url}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                >
+                  {link.platform} <ExternalLink size={11} />
+                </a>
+              ))}
+            </div>
+          )}
+        </div>
         <button onClick={openStaffPortal}>
           {adminToken ? 'Admin panel' : 'Staff login'}
         </button>
@@ -628,27 +686,28 @@ export default function App() {
             <small className="eyebrow">
               <Lock size={14} /> TEAM ACCESS
             </small>
-            {adminConfigured === false ? (
+            {isSetupView ? (
               <>
                 <h2>
                   Initialize <i>admin.</i>
                 </h2>
-                <p>Create the administrator account for this workspace.</p>
+                <p>Create the administrator account stored in your backend.</p>
               </>
             ) : (
               <>
                 <h2>
                   Staff <i>login.</i>
                 </h2>
-                <p>Sign in with your administrator credentials to manage inquiries and catalog.</p>
+                <p>Sign in with your administrator credentials to manage inquiries and links.</p>
               </>
             )}
 
             <form onSubmit={handleAdminAuth}>
               <label>
-                Username
+                Email or username
                 <input
                   required
+                  type="text"
                   autoComplete="username"
                   value={authUser}
                   onChange={(e) => setAuthUser(e.target.value)}
@@ -659,12 +718,12 @@ export default function App() {
                 <input
                   required
                   type="password"
-                  autoComplete={adminConfigured === false ? 'new-password' : 'current-password'}
+                  autoComplete={isSetupView ? 'new-password' : 'current-password'}
                   value={authPass}
                   onChange={(e) => setAuthPass(e.target.value)}
                 />
               </label>
-              {adminConfigured === false && (
+              {isSetupView && (
                 <label>
                   Confirm password
                   <input
@@ -680,11 +739,25 @@ export default function App() {
               <button className="primary wide" disabled={authBusy || adminConfigured === null}>
                 {authBusy
                   ? 'Verifying…'
-                  : adminConfigured === false
+                  : isSetupView
                     ? 'Create admin & enter'
                     : 'Sign in'}{' '}
                 <ArrowRight />
               </button>
+              {adminConfigured === false && (
+                <button
+                  type="button"
+                  className="auth-mode-switch"
+                  onClick={() => {
+                    setAuthError('');
+                    setForceLoginMode((prev) => !prev);
+                  }}
+                >
+                  {forceLoginMode
+                    ? 'Need to initialize admin first?'
+                    : 'Already configured in Supabase? Sign in'}
+                </button>
+              )}
             </form>
           </div>
         </div>

@@ -2,6 +2,7 @@ import React, { useCallback, useEffect, useState } from 'react';
 import {
   CheckCircle2,
   ClipboardList,
+  ExternalLink,
   Globe2,
   LogOut,
   Mail,
@@ -11,6 +12,7 @@ import {
   Plus,
   RefreshCw,
   Search,
+  Share2,
   Shield,
   Trash2,
   X,
@@ -48,6 +50,14 @@ export interface DestinationItem {
   active: boolean;
 }
 
+export interface SocialLinkItem {
+  id: string;
+  platform: string;
+  label: string;
+  url: string;
+  active: boolean;
+}
+
 interface AdminStats {
   total: number;
   pending: number;
@@ -75,12 +85,32 @@ const STATUS_OPTIONS: BookingItem['status'][] = [
 
 const CURRENCY_OPTIONS: BookingItem['currency'][] = ['RWF', 'USD', 'EUR'];
 
+const SOCIAL_PLATFORMS = [
+  'Instagram',
+  'Facebook',
+  'TikTok',
+  'X (Twitter)',
+  'YouTube',
+  'LinkedIn',
+  'WhatsApp Channel',
+  'Website',
+];
+
 function formatStatusLabel(status: string): string {
   return status.replace(/_/g, ' ').replace(/\b\w/g, (c) => c.toUpperCase());
 }
 
 function sanitizeDigits(phone: string): string {
   return phone.replace(/\D/g, '');
+}
+
+function isSafeHttpUrl(url: string): boolean {
+  try {
+    const parsed = new URL(url);
+    return parsed.protocol === 'https:' || parsed.protocol === 'http:';
+  } catch {
+    return false;
+  }
 }
 
 export default function AdminPanel({
@@ -90,11 +120,13 @@ export default function AdminPanel({
   onLogout,
   onCatalogUpdated,
 }: AdminPanelProps) {
-  const [tab, setTab] = useState<'bookings' | 'services' | 'destinations'>('bookings');
+  const [tab, setTab] = useState<'bookings' | 'services' | 'destinations' | 'social'>('bookings');
   const [bookings, setBookings] = useState<BookingItem[]>([]);
   const [stats, setStats] = useState<AdminStats>({ total: 0, pending: 0, inProgress: 0, confirmed: 0 });
   const [services, setServices] = useState<ServiceItem[]>([]);
   const [destinations, setDestinations] = useState<DestinationItem[]>([]);
+  const [socialLinks, setSocialLinks] = useState<SocialLinkItem[]>([]);
+  const [storageMode, setStorageMode] = useState<string>('');
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
   const [search, setSearch] = useState('');
@@ -111,6 +143,10 @@ export default function AdminPanel({
   const [newServiceDesc, setNewServiceDesc] = useState('');
   const [newDestinationName, setNewDestinationName] = useState('');
 
+  const [newSocialPlatform, setNewSocialPlatform] = useState('Instagram');
+  const [newSocialLabel, setNewSocialLabel] = useState('');
+  const [newSocialUrl, setNewSocialUrl] = useState('');
+
   const authHeaders = useCallback(
     () => ({
       'Content-Type': 'application/json',
@@ -123,29 +159,37 @@ export default function AdminPanel({
     setLoading(true);
     setError('');
     try {
-      const [bRes, sRes, dRes] = await Promise.all([
+      const [bRes, sRes, dRes, socRes] = await Promise.all([
         fetch('/api/admin/bookings', { headers: { Authorization: `Bearer ${token}` } }),
         fetch('/api/admin/services', { headers: { Authorization: `Bearer ${token}` } }),
         fetch('/api/admin/destinations', { headers: { Authorization: `Bearer ${token}` } }),
+        fetch('/api/admin/social-links', { headers: { Authorization: `Bearer ${token}` } }),
       ]);
 
-      if (bRes.status === 401 || sRes.status === 401 || dRes.status === 401) {
+      if (bRes.status === 401 || sRes.status === 401 || dRes.status === 401 || socRes.status === 401) {
         onLogout();
         return;
       }
 
-      if (!bRes.ok || !sRes.ok || !dRes.ok) {
+      if (!bRes.ok || !sRes.ok || !dRes.ok || !socRes.ok) {
         throw new Error('Failed to load administration data.');
       }
 
-      const bData = (await bRes.json()) as { bookings: BookingItem[]; stats: AdminStats };
+      const bData = (await bRes.json()) as {
+        bookings: BookingItem[];
+        stats: AdminStats;
+        storage?: string;
+      };
       const sData = (await sRes.json()) as { services: ServiceItem[] };
       const dData = (await dRes.json()) as { destinations: DestinationItem[] };
+      const socData = (await socRes.json()) as { socialLinks: SocialLinkItem[] };
 
       setBookings(bData.bookings);
       setStats(bData.stats);
+      setStorageMode(bData.storage || '');
       setServices(sData.services);
       setDestinations(dData.destinations);
+      setSocialLinks(socData.socialLinks);
     } catch (err: unknown) {
       setError(err instanceof Error ? err.message : 'Unable to fetch dashboard data.');
     } finally {
@@ -288,6 +332,62 @@ export default function AdminPanel({
     }
   }
 
+  async function addSocialLink(e: React.FormEvent) {
+    e.preventDefault();
+    if (!newSocialUrl.trim()) return;
+    setError('');
+    try {
+      const res = await fetch('/api/admin/social-links', {
+        method: 'POST',
+        headers: authHeaders(),
+        body: JSON.stringify({
+          platform: newSocialPlatform,
+          label: newSocialLabel.trim() || newSocialPlatform,
+          url: newSocialUrl.trim(),
+        }),
+      });
+      const data = (await res.json()) as { error?: string };
+      if (!res.ok) throw new Error(data.error || 'Could not add social media link.');
+      setNewSocialLabel('');
+      setNewSocialUrl('');
+      await loadData();
+      onCatalogUpdated();
+    } catch (err: unknown) {
+      setError(err instanceof Error ? err.message : 'Could not add social media link.');
+    }
+  }
+
+  async function toggleSocialLink(link: SocialLinkItem) {
+    setError('');
+    try {
+      const res = await fetch(`/api/admin/social-links/${link.id}`, {
+        method: 'PATCH',
+        headers: authHeaders(),
+        body: JSON.stringify({ active: !link.active }),
+      });
+      if (!res.ok) throw new Error('Could not update social media link.');
+      await loadData();
+      onCatalogUpdated();
+    } catch (err: unknown) {
+      setError(err instanceof Error ? err.message : 'Could not update social media link.');
+    }
+  }
+
+  async function deleteSocialLink(id: string) {
+    setError('');
+    try {
+      const res = await fetch(`/api/admin/social-links/${id}`, {
+        method: 'DELETE',
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      if (!res.ok) throw new Error('Could not delete social media link.');
+      await loadData();
+      onCatalogUpdated();
+    } catch (err: unknown) {
+      setError(err instanceof Error ? err.message : 'Could not delete social media link.');
+    }
+  }
+
   const filteredBookings = bookings.filter((b) => {
     const matchesStatus = statusFilter === 'all' || b.status === statusFilter;
     const q = search.trim().toLowerCase();
@@ -310,6 +410,7 @@ export default function AdminPanel({
             <strong>TNP Admin Panel</strong>
             <small>
               <Shield size={12} /> Signed in as {username}
+              {storageMode === 'supabase' && ' · Supabase connected'}
             </small>
           </div>
         </div>
@@ -367,6 +468,13 @@ export default function AdminPanel({
             onClick={() => setTab('destinations')}
           >
             <MapPin size={16} /> Destinations ({destinations.length})
+          </button>
+          <button
+            type="button"
+            className={tab === 'social' ? 'active' : ''}
+            onClick={() => setTab('social')}
+          >
+            <Share2 size={16} /> Social Media ({socialLinks.length})
           </button>
         </div>
 
@@ -567,6 +675,85 @@ export default function AdminPanel({
                 </div>
               ))}
             </div>
+          </div>
+        )}
+
+        {tab === 'social' && (
+          <div className="admin-panel-card">
+            <form className="admin-inline-form" onSubmit={addSocialLink}>
+              <select
+                className="admin-select"
+                value={newSocialPlatform}
+                onChange={(e) => setNewSocialPlatform(e.target.value)}
+              >
+                {SOCIAL_PLATFORMS.map((p) => (
+                  <option key={p} value={p}>
+                    {p}
+                  </option>
+                ))}
+              </select>
+              <input
+                type="text"
+                placeholder="Display handle or label (e.g. @tnptravel)"
+                value={newSocialLabel}
+                onChange={(e) => setNewSocialLabel(e.target.value)}
+              />
+              <input
+                type="url"
+                placeholder="Full URL (e.g. https://instagram.com/tnptravel)"
+                value={newSocialUrl}
+                onChange={(e) => setNewSocialUrl(e.target.value)}
+                required
+              />
+              <button type="submit" className="primary">
+                <Plus size={16} /> Add link
+              </button>
+            </form>
+
+            {socialLinks.length === 0 ? (
+              <div className="admin-empty">
+                No social media links added yet. Add your Instagram, Facebook, TikTok, X, YouTube, or
+                LinkedIn URLs above so visitors can click straight through to your official pages.
+              </div>
+            ) : (
+              <div className="catalog-grid">
+                {socialLinks.map((link) => (
+                  <div key={link.id} className={`catalog-card ${link.active ? '' : 'inactive'}`}>
+                    <div className="social-card-info">
+                      <strong>{link.platform}</strong>
+                      <span className="muted">{link.label}</span>
+                      {isSafeHttpUrl(link.url) && (
+                        <a
+                          href={link.url}
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          className="social-source-link"
+                        >
+                          {link.url} <ExternalLink size={12} />
+                        </a>
+                      )}
+                    </div>
+                    <div className="row-actions">
+                      <button
+                        type="button"
+                        className={link.active ? 'toggle-btn active' : 'toggle-btn'}
+                        onClick={() => toggleSocialLink(link)}
+                      >
+                        <CheckCircle2 size={15} /> {link.active ? 'Active' : 'Hidden'}
+                      </button>
+                      <button
+                        type="button"
+                        className="icon-btn danger"
+                        title="Delete social link"
+                        onClick={() => deleteSocialLink(link.id)}
+                      >
+                        <Trash2 size={15} />
+                      </button>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            )}
           </div>
         )}
       </div>
