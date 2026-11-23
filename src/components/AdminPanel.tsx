@@ -528,44 +528,50 @@ export default function AdminPanel({
                       const waDigits = sanitizeDigits(b.phone);
                       return (
                         <tr key={b.id}>
-                          <td>
-                            <strong className="ref-code">{b.reference}</strong>
-                            <small className="muted">{new Date(b.created_at).toLocaleString()}</small>
-                          </td>
-                          <td>
-                            <strong>{b.customer_name}</strong>
-                            <div className="contact-links">
-                              <a href={`mailto:${b.email}`}>
-                                <Mail size={12} /> {b.email}
-                              </a>
-                              {waDigits && (
-                                <a
-                                  href={`https://wa.me/${waDigits}?text=${encodeURIComponent(
-                                    `Hello ${b.customer_name}, regarding your TNP Travel Agency inquiry (${b.reference}):`,
-                                  )}`}
-                                  target="_blank"
-                                  rel="noreferrer"
-                                >
-                                  <MessageCircle size={12} /> {b.phone}
-                                </a>
-                              )}
+                          <td data-label="Reference">
+                            <div>
+                              <strong className="ref-code">{b.reference}</strong>
+                              <small className="muted">{new Date(b.created_at).toLocaleString()}</small>
                             </div>
                           </td>
-                          <td>
-                            <strong>{b.service_type}</strong>
-                            <small className="muted">
-                              {b.destination ? `Destination: ${b.destination}` : 'No destination specified'}
-                              {b.travel_date ? ` · ${b.travel_date}` : ''}
-                            </small>
-                            {b.details && <p className="detail-snippet">{b.details}</p>}
-                            {b.staff_note && <p className="staff-note-pill">Note: {b.staff_note}</p>}
+                          <td data-label="Customer">
+                            <div>
+                              <strong>{b.customer_name}</strong>
+                              <div className="contact-links">
+                                <a href={`mailto:${b.email}`}>
+                                  <Mail size={12} /> {b.email}
+                                </a>
+                                {waDigits && (
+                                  <a
+                                    href={`https://wa.me/${waDigits}?text=${encodeURIComponent(
+                                      `Hello ${b.customer_name}, regarding your TNP Travel Agency inquiry (${b.reference}):`,
+                                    )}`}
+                                    target="_blank"
+                                    rel="noreferrer"
+                                  >
+                                    <MessageCircle size={12} /> {b.phone}
+                                  </a>
+                                )}
+                              </div>
+                            </div>
                           </td>
-                          <td>
+                          <td data-label="Service & Trip">
+                            <div>
+                              <strong>{b.service_type}</strong>
+                              <small className="muted">
+                                {b.destination ? `Destination: ${b.destination}` : 'No destination specified'}
+                                {b.travel_date ? ` · ${b.travel_date}` : ''}
+                              </small>
+                              {b.details && <p className="detail-snippet">{b.details}</p>}
+                              {b.staff_note && <p className="staff-note-pill">Note: {b.staff_note}</p>}
+                            </div>
+                          </td>
+                          <td data-label="Status">
                             <span className={`status-badge status-${b.status}`}>
                               {formatStatusLabel(b.status)}
                             </span>
                           </td>
-                          <td>
+                          <td data-label="Quote">
                             {b.quoted_amount !== null ? (
                               <strong>
                                 {b.quoted_amount.toLocaleString()} {b.currency}
@@ -574,7 +580,7 @@ export default function AdminPanel({
                               <span className="muted">Unquoted</span>
                             )}
                           </td>
-                          <td>
+                          <td data-label="Actions">
                             <div className="row-actions">
                               <button
                                 type="button"
