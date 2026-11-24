@@ -641,6 +641,84 @@ async function startServer(): Promise<void> {
     res.json({ ok: true });
   });
 
+  // Admin password update (updates Supabase admin_accounts or in-memory claimedAdmin)
+  app.post('/api/admin/change-password', requireAdmin, async (req: AuthedRequest, res) => {
+    if (!checkRateLimit(req)) {
+      res.status(429).json({ error: 'Too many attempts. Please try again later.' });
+      return;
+    }
+
+    if (isEnvConfigured()) {
+      res.status(409).json({
+        error: 'ADMIN_PASSWORD is set in server environment secrets. Update ADMIN_PASSWORD in Settings -> Secrets.',
+      });
+      return;
+    }
+
+    const currentPassword = typeof req.body?.currentPassword === 'string' ? req.body.currentPassword : '';
+    const newPassword = typeof req.body?.newPassword === 'string' ? req.body.newPassword : '';
+
+    if (!currentPassword || newPassword.length < 5) {
+      res.status(400).json({ error: 'Current password and a new password (min 5 chars) are required.' });
+      return;
+    }
+
+    const username = (req.adminUser?.username || '').trim().toLowerCase();
+    let verified = false;
+    let updatedInSupabase = false;
+
+    if (supabaseAdmin && username) {
+      try {
+        const { data: acc } = await supabaseAdmin
+          .from('admin_accounts')
+          .select('id, password_hash, password_salt')
+          .eq('email', username)
+          .maybeSingle();
+
+        if (acc && typeof acc.password_hash === 'string' && typeof acc.password_salt === 'string') {
+          if (!verifyScryptPassword(currentPassword, acc.password_salt, acc.password_hash)) {
+            res.status(401).json({ error: 'Current password is incorrect.' });
+            return;
+          }
+          verified = true;
+          const nextSalt = crypto.randomBytes(16).toString('hex');
+          const nextHash = hashPassword(newPassword, nextSalt);
+          const { error: updateErr } = await supabaseAdmin
+            .from('admin_accounts')
+            .update({ password_hash: nextHash, password_salt: nextSalt })
+            .eq('id', acc.id);
+          if (updateErr) {
+            res.status(500).json({ error: updateErr.message || 'Could not update password.' });
+            return;
+          }
+          updatedInSupabase = true;
+        }
+      } catch {
+        // Fall through to claimedAdmin check
+      }
+    }
+
+    if (!verified && claimedAdmin && safeEqualText(username, claimedAdmin.username.toLowerCase())) {
+      if (!verifyScryptPassword(currentPassword, claimedAdmin.salt, claimedAdmin.hash)) {
+        res.status(401).json({ error: 'Current password is incorrect.' });
+        return;
+      }
+      verified = true;
+      const nextSalt = crypto.randomBytes(16).toString('hex');
+      const nextHash = hashPassword(newPassword, nextSalt);
+      claimedAdmin = { username: claimedAdmin.username, salt: nextSalt, hash: nextHash };
+    }
+
+    if (!verified) {
+      res.status(400).json({
+        error: 'Unable to update password for this account type. Update it in Supabase Authentication or Settings -> Secrets.',
+      });
+      return;
+    }
+
+    res.json({ ok: true, updatedInSupabase });
+  });
+
   // Admin bookings management
   app.get('/api/admin/bookings', requireAdmin, async (_req, res) => {
     if (supabaseAdmin) {

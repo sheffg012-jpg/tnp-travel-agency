@@ -5,6 +5,8 @@ import {
   Car,
   CheckCircle2,
   ExternalLink,
+  Eye,
+  EyeOff,
   Globe2,
   Hotel,
   Lock,
@@ -88,11 +90,15 @@ function isSafeHttpUrl(rawUrl: string): boolean {
   }
 }
 
+function isAdminPath(): boolean {
+  if (typeof window === 'undefined') return false;
+  return window.location.pathname.replace(/\/+$/, '') === '/admin';
+}
+
 export default function App() {
   const [menu, setMenu] = useState(false);
   const [booking, setBooking] = useState(false);
-  const [staffModal, setStaffModal] = useState(false);
-  const [adminOpen, setAdminOpen] = useState(false);
+  const [isAdminRoute, setIsAdminRoute] = useState<boolean>(() => isAdminPath());
 
   const [services, setServices] = useState<CatalogService[]>(DEFAULT_SERVICES);
   const [destinations, setDestinations] = useState<CatalogDestination[]>(DEFAULT_DESTINATIONS);
@@ -119,6 +125,8 @@ export default function App() {
   const [authUser, setAuthUser] = useState('');
   const [authPass, setAuthPass] = useState('');
   const [authConfirm, setAuthConfirm] = useState('');
+  const [showAuthPass, setShowAuthPass] = useState(false);
+  const [showAuthConfirm, setShowAuthConfirm] = useState(false);
   const [authError, setAuthError] = useState('');
   const [authBusy, setAuthBusy] = useState(false);
 
@@ -151,21 +159,7 @@ export default function App() {
     }
   }, []);
 
-  useEffect(() => {
-    fetchCatalog();
-  }, [fetchCatalog]);
-
-  async function openStaffPortal() {
-    if (adminToken) {
-      setAdminOpen(true);
-      return;
-    }
-    setAuthError('');
-    setAuthUser('');
-    setAuthPass('');
-    setAuthConfirm('');
-    setForceLoginMode(false);
-    setStaffModal(true);
+  const checkAdminStatus = useCallback(async () => {
     try {
       const res = await fetch('/api/admin/status');
       if (res.ok) {
@@ -177,6 +171,37 @@ export default function App() {
     } catch {
       setAdminConfigured(true);
     }
+  }, []);
+
+  useEffect(() => {
+    fetchCatalog();
+  }, [fetchCatalog]);
+
+  useEffect(() => {
+    const onPopState = () => {
+      setIsAdminRoute(isAdminPath());
+    };
+    window.addEventListener('popstate', onPopState);
+    return () => window.removeEventListener('popstate', onPopState);
+  }, []);
+
+  useEffect(() => {
+    if (isAdminRoute && !adminToken) {
+      setAuthError('');
+      setAuthPass('');
+      setAuthConfirm('');
+      setShowAuthPass(false);
+      setShowAuthConfirm(false);
+      setForceLoginMode(false);
+      checkAdminStatus();
+    }
+  }, [isAdminRoute, adminToken, checkAdminStatus]);
+
+  function navigateTo(targetPath: '/' | '/admin') {
+    if (window.location.pathname !== targetPath) {
+      window.history.pushState({}, '', targetPath);
+    }
+    setIsAdminRoute(targetPath === '/admin');
   }
 
   const isSetupView = adminConfigured === false && !forceLoginMode;
@@ -209,8 +234,9 @@ export default function App() {
       setForceLoginMode(false);
       setAuthPass('');
       setAuthConfirm('');
-      setStaffModal(false);
-      setAdminOpen(true);
+      setShowAuthPass(false);
+      setShowAuthConfirm(false);
+      navigateTo('/admin');
     } catch (err: unknown) {
       setAuthError(err instanceof Error ? err.message : 'Unable to sign in.');
     } finally {
@@ -222,7 +248,6 @@ export default function App() {
     const token = adminToken;
     setAdminToken(null);
     setAdminUsername('');
-    setAdminOpen(false);
     if (token) {
       try {
         await fetch('/api/admin/logout', {
@@ -233,6 +258,7 @@ export default function App() {
         // Ignore network errors on logout
       }
     }
+    navigateTo('/admin');
   }
 
   async function submit(e: React.FormEvent) {
@@ -295,6 +321,138 @@ export default function App() {
     } finally {
       setBusy(false);
     }
+  }
+
+  if (isAdminRoute) {
+    if (adminToken) {
+      return (
+        <AdminPanel
+          token={adminToken}
+          username={adminUsername}
+          onClose={() => navigateTo('/')}
+          onLogout={handleAdminLogout}
+          onCatalogUpdated={fetchCatalog}
+        />
+      );
+    }
+
+    return (
+      <div className="admin-auth-page">
+        <div className="modal modal-narrow">
+          <button
+            type="button"
+            className="close"
+            onClick={() => navigateTo('/')}
+            aria-label="Back to website"
+          >
+            <X />
+          </button>
+          <small className="eyebrow">
+            <Lock size={14} /> TEAM ACCESS
+          </small>
+          {isSetupView ? (
+            <>
+              <h2>
+                Initialize <i>admin.</i>
+              </h2>
+              <p>Create the administrator account stored in your backend.</p>
+            </>
+          ) : (
+            <>
+              <h2>
+                Admin <i>login.</i>
+              </h2>
+              <p>Sign in with your administrator credentials to manage inquiries and links.</p>
+            </>
+          )}
+
+          <form onSubmit={handleAdminAuth}>
+            <label>
+              Email or username
+              <input
+                required
+                type="text"
+                autoComplete="username"
+                value={authUser}
+                onChange={(e) => setAuthUser(e.target.value)}
+              />
+            </label>
+            <label>
+              Password
+              <div className="password-field">
+                <input
+                  required
+                  type={showAuthPass ? 'text' : 'password'}
+                  autoComplete={isSetupView ? 'new-password' : 'current-password'}
+                  value={authPass}
+                  onChange={(e) => setAuthPass(e.target.value)}
+                />
+                <button
+                  type="button"
+                  className="password-toggle"
+                  onClick={() => setShowAuthPass((v) => !v)}
+                  aria-label={showAuthPass ? 'Hide password' : 'Show password'}
+                >
+                  {showAuthPass ? <EyeOff size={18} /> : <Eye size={18} />}
+                </button>
+              </div>
+            </label>
+            {isSetupView && (
+              <label>
+                Confirm password
+                <div className="password-field">
+                  <input
+                    required
+                    type={showAuthConfirm ? 'text' : 'password'}
+                    autoComplete="new-password"
+                    value={authConfirm}
+                    onChange={(e) => setAuthConfirm(e.target.value)}
+                  />
+                  <button
+                    type="button"
+                    className="password-toggle"
+                    onClick={() => setShowAuthConfirm((v) => !v)}
+                    aria-label={showAuthConfirm ? 'Hide password' : 'Show password'}
+                  >
+                    {showAuthConfirm ? <EyeOff size={18} /> : <Eye size={18} />}
+                  </button>
+                </div>
+              </label>
+            )}
+            {authError && <div className="notice-error">{authError}</div>}
+            <button className="primary wide" disabled={authBusy || adminConfigured === null}>
+              {authBusy
+                ? 'Verifying…'
+                : isSetupView
+                  ? 'Create admin & enter'
+                  : 'Sign in'}{' '}
+              <ArrowRight />
+            </button>
+            {adminConfigured === false && (
+              <button
+                type="button"
+                className="auth-mode-switch"
+                onClick={() => {
+                  setAuthError('');
+                  setForceLoginMode((prev) => !prev);
+                }}
+              >
+                {forceLoginMode
+                  ? 'Need to initialize admin first?'
+                  : 'Already configured in Supabase? Sign in'}
+              </button>
+            )}
+            <button
+              type="button"
+              className="auth-mode-switch"
+              onClick={() => navigateTo('/')}
+            >
+              Back to public website
+            </button>
+          </form>
+        </div>
+      </div>
+    );
   }
 
   return (
@@ -585,9 +743,7 @@ export default function App() {
             </div>
           )}
         </div>
-        <button onClick={openStaffPortal}>
-          {adminToken ? 'Admin panel' : 'Staff login'}
-        </button>
+        <span className="footer-spacer" aria-hidden="true" />
       </footer>
 
       <a className="wa-float" href={wa} target="_blank" rel="noreferrer" aria-label="Chat on WhatsApp">
@@ -675,102 +831,6 @@ export default function App() {
             </form>
           </div>
         </div>
-      )}
-
-      {staffModal && (
-        <div className="overlay" onClick={() => setStaffModal(false)}>
-          <div className="modal modal-narrow" onClick={(e) => e.stopPropagation()}>
-            <button className="close" onClick={() => setStaffModal(false)} aria-label="Close modal">
-              <X />
-            </button>
-            <small className="eyebrow">
-              <Lock size={14} /> TEAM ACCESS
-            </small>
-            {isSetupView ? (
-              <>
-                <h2>
-                  Initialize <i>admin.</i>
-                </h2>
-                <p>Create the administrator account stored in your backend.</p>
-              </>
-            ) : (
-              <>
-                <h2>
-                  Staff <i>login.</i>
-                </h2>
-                <p>Sign in with your administrator credentials to manage inquiries and links.</p>
-              </>
-            )}
-
-            <form onSubmit={handleAdminAuth}>
-              <label>
-                Email or username
-                <input
-                  required
-                  type="text"
-                  autoComplete="username"
-                  value={authUser}
-                  onChange={(e) => setAuthUser(e.target.value)}
-                />
-              </label>
-              <label>
-                Password
-                <input
-                  required
-                  type="password"
-                  autoComplete={isSetupView ? 'new-password' : 'current-password'}
-                  value={authPass}
-                  onChange={(e) => setAuthPass(e.target.value)}
-                />
-              </label>
-              {isSetupView && (
-                <label>
-                  Confirm password
-                  <input
-                    required
-                    type="password"
-                    autoComplete="new-password"
-                    value={authConfirm}
-                    onChange={(e) => setAuthConfirm(e.target.value)}
-                  />
-                </label>
-              )}
-              {authError && <div className="notice-error">{authError}</div>}
-              <button className="primary wide" disabled={authBusy || adminConfigured === null}>
-                {authBusy
-                  ? 'Verifying…'
-                  : isSetupView
-                    ? 'Create admin & enter'
-                    : 'Sign in'}{' '}
-                <ArrowRight />
-              </button>
-              {adminConfigured === false && (
-                <button
-                  type="button"
-                  className="auth-mode-switch"
-                  onClick={() => {
-                    setAuthError('');
-                    setForceLoginMode((prev) => !prev);
-                  }}
-                >
-                  {forceLoginMode
-                    ? 'Need to initialize admin first?'
-                    : 'Already configured in Supabase? Sign in'}
-                </button>
-              )}
-            </form>
-          </div>
-        </div>
-      )}
-
-      {adminOpen && adminToken && (
-        <AdminPanel
-          token={adminToken}
-          username={adminUsername}
-          onClose={() => setAdminOpen(false)}
-          onLogout={handleAdminLogout}
-          onCatalogUpdated={fetchCatalog}
-        />
       )}
     </>
   );

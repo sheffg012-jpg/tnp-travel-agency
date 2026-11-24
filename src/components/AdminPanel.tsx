@@ -3,7 +3,10 @@ import {
   CheckCircle2,
   ClipboardList,
   ExternalLink,
+  Eye,
+  EyeOff,
   Globe2,
+  KeyRound,
   LogOut,
   Mail,
   MapPin,
@@ -146,6 +149,17 @@ export default function AdminPanel({
   const [newSocialPlatform, setNewSocialPlatform] = useState('Instagram');
   const [newSocialLabel, setNewSocialLabel] = useState('');
   const [newSocialUrl, setNewSocialUrl] = useState('');
+
+  const [passwordModal, setPasswordModal] = useState(false);
+  const [currentPw, setCurrentPw] = useState('');
+  const [newPw, setNewPw] = useState('');
+  const [confirmPw, setConfirmPw] = useState('');
+  const [showCurrentPw, setShowCurrentPw] = useState(false);
+  const [showNewPw, setShowNewPw] = useState(false);
+  const [showConfirmPw, setShowConfirmPw] = useState(false);
+  const [pwMsg, setPwMsg] = useState('');
+  const [pwError, setPwError] = useState('');
+  const [pwSaving, setPwSaving] = useState(false);
 
   const authHeaders = useCallback(
     () => ({
@@ -388,6 +402,57 @@ export default function AdminPanel({
     }
   }
 
+  function openPasswordModal() {
+    setCurrentPw('');
+    setNewPw('');
+    setConfirmPw('');
+    setShowCurrentPw(false);
+    setShowNewPw(false);
+    setShowConfirmPw(false);
+    setPwError('');
+    setPwMsg('');
+    setPasswordModal(true);
+  }
+
+  async function handleChangePassword(e: React.FormEvent) {
+    e.preventDefault();
+    setPwError('');
+    setPwMsg('');
+
+    if (newPw.length < 5) {
+      setPwError('New password must be at least 5 characters.');
+      return;
+    }
+    if (newPw !== confirmPw) {
+      setPwError('New passwords do not match.');
+      return;
+    }
+
+    setPwSaving(true);
+    try {
+      const res = await fetch('/api/admin/change-password', {
+        method: 'POST',
+        headers: authHeaders(),
+        body: JSON.stringify({ currentPassword: currentPw, newPassword: newPw }),
+      });
+      if (res.status === 401 && res.headers.get('content-type')?.includes('application/json')) {
+        const errData = (await res.json()) as { error?: string };
+        throw new Error(errData.error || 'Current password is incorrect.');
+      }
+      const data = (await res.json()) as { ok?: boolean; error?: string };
+      if (!res.ok) throw new Error(data.error || 'Could not update password.');
+
+      setCurrentPw('');
+      setNewPw('');
+      setConfirmPw('');
+      setPwMsg('Admin password updated successfully.');
+    } catch (err: unknown) {
+      setPwError(err instanceof Error ? err.message : 'Could not update password.');
+    } finally {
+      setPwSaving(false);
+    }
+  }
+
   const filteredBookings = bookings.filter((b) => {
     const matchesStatus = statusFilter === 'all' || b.status === statusFilter;
     const q = search.trim().toLowerCase();
@@ -417,6 +482,9 @@ export default function AdminPanel({
         <div className="admin-top-actions">
           <button type="button" className="admin-btn-outline" onClick={loadData} disabled={loading}>
             <RefreshCw size={15} /> Refresh
+          </button>
+          <button type="button" className="admin-btn-outline" onClick={openPasswordModal}>
+            <KeyRound size={15} /> Password
           </button>
           <button type="button" className="admin-btn-outline" onClick={onClose}>
             Public site
@@ -830,6 +898,88 @@ export default function AdminPanel({
               </label>
               <button type="submit" className="primary wide" disabled={saving}>
                 {saving ? 'Saving…' : 'Save changes'}
+              </button>
+            </form>
+          </div>
+        </div>
+      )}
+
+      {passwordModal && (
+        <div className="overlay" onClick={() => setPasswordModal(false)}>
+          <div className="modal modal-narrow" onClick={(e) => e.stopPropagation()}>
+            <button type="button" className="close" onClick={() => setPasswordModal(false)}>
+              <X />
+            </button>
+            <small className="eyebrow">SECURITY</small>
+            <h2>
+              Update <i>password.</i>
+            </h2>
+            <p>Change the administrator password for {username}.</p>
+            <form onSubmit={handleChangePassword}>
+              <label>
+                Current password
+                <div className="password-field">
+                  <input
+                    required
+                    type={showCurrentPw ? 'text' : 'password'}
+                    autoComplete="current-password"
+                    value={currentPw}
+                    onChange={(e) => setCurrentPw(e.target.value)}
+                  />
+                  <button
+                    type="button"
+                    className="password-toggle"
+                    onClick={() => setShowCurrentPw((v) => !v)}
+                    aria-label={showCurrentPw ? 'Hide current password' : 'Show current password'}
+                  >
+                    {showCurrentPw ? <EyeOff size={18} /> : <Eye size={18} />}
+                  </button>
+                </div>
+              </label>
+              <label>
+                New password
+                <div className="password-field">
+                  <input
+                    required
+                    type={showNewPw ? 'text' : 'password'}
+                    autoComplete="new-password"
+                    value={newPw}
+                    onChange={(e) => setNewPw(e.target.value)}
+                  />
+                  <button
+                    type="button"
+                    className="password-toggle"
+                    onClick={() => setShowNewPw((v) => !v)}
+                    aria-label={showNewPw ? 'Hide new password' : 'Show new password'}
+                  >
+                    {showNewPw ? <EyeOff size={18} /> : <Eye size={18} />}
+                  </button>
+                </div>
+              </label>
+              <label>
+                Confirm new password
+                <div className="password-field">
+                  <input
+                    required
+                    type={showConfirmPw ? 'text' : 'password'}
+                    autoComplete="new-password"
+                    value={confirmPw}
+                    onChange={(e) => setConfirmPw(e.target.value)}
+                  />
+                  <button
+                    type="button"
+                    className="password-toggle"
+                    onClick={() => setShowConfirmPw((v) => !v)}
+                    aria-label={showConfirmPw ? 'Hide confirm password' : 'Show confirm password'}
+                  >
+                    {showConfirmPw ? <EyeOff size={18} /> : <Eye size={18} />}
+                  </button>
+                </div>
+              </label>
+              {pwError && <div className="notice-error">{pwError}</div>}
+              {pwMsg && <div className="notice">{pwMsg}</div>}
+              <button type="submit" className="primary wide" disabled={pwSaving}>
+                {pwSaving ? 'Updating…' : 'Update password'}
               </button>
             </form>
           </div>
