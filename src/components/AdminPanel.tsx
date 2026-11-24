@@ -2,11 +2,13 @@ import React, { useCallback, useEffect, useState } from 'react';
 import {
   CheckCircle2,
   ClipboardList,
+  Copy,
   ExternalLink,
   Eye,
   EyeOff,
   Globe2,
   KeyRound,
+  Link2,
   LogOut,
   Mail,
   MapPin,
@@ -169,13 +171,15 @@ export default function AdminPanel({
   const [newSocialLabel, setNewSocialLabel] = useState('');
   const [newSocialUrl, setNewSocialUrl] = useState('');
 
-  const [userActionMode, setUserActionMode] = useState<'invite' | 'create'>('invite');
+  const [userActionMode, setUserActionMode] = useState<'invite' | 'link' | 'create'>('invite');
   const [newAdminEmail, setNewAdminEmail] = useState('');
   const [newAdminName, setNewAdminName] = useState('');
   const [newAdminRole, setNewAdminRole] = useState<'admin' | 'super_admin'>('admin');
   const [newAdminPass, setNewAdminPass] = useState('');
   const [showNewAdminPass, setShowNewAdminPass] = useState(false);
   const [userMsg, setUserMsg] = useState('');
+  const [generatedInviteLink, setGeneratedInviteLink] = useState('');
+  const [copiedInviteLink, setCopiedInviteLink] = useState(false);
   const [userBusy, setUserBusy] = useState(false);
 
   const [passwordModal, setPasswordModal] = useState(false);
@@ -438,6 +442,8 @@ export default function AdminPanel({
     if (!newAdminEmail.trim()) return;
     setError('');
     setUserMsg('');
+    setGeneratedInviteLink('');
+    setCopiedInviteLink(false);
     setUserBusy(true);
 
     try {
@@ -453,14 +459,35 @@ export default function AdminPanel({
           redirectTo: `${window.location.origin}/admin`,
         }),
       });
-      const data = (await res.json()) as { error?: string; email?: string; mode?: string };
+      const data = (await res.json()) as {
+        error?: string;
+        email?: string;
+        mode?: string;
+        inviteLink?: string;
+        rateLimitFallback?: boolean;
+      };
       if (!res.ok) throw new Error(data.error || 'Could not process admin user request.');
 
-      setUserMsg(
-        data.mode === 'create'
-          ? `Admin account created and synced for ${data.email}.`
-          : `Invitation sent to ${data.email}. Accepting the invite will direct them to /admin to set their password.`,
-      );
+      if (data.inviteLink) {
+        setGeneratedInviteLink(data.inviteLink);
+      }
+
+      if (data.mode === 'create') {
+        setUserMsg(`Admin account created and synced for ${data.email}. They can sign in immediately at /admin.`);
+      } else if (data.rateLimitFallback) {
+        setUserMsg(
+          `Supabase's built-in email limit was reached, so a direct invite link was generated for ${data.email}. Copy and send it to them so they can set their password at /admin.`,
+        );
+      } else if (data.mode === 'link') {
+        setUserMsg(
+          `Direct invite link generated for ${data.email}. Copy and send it to them so they can set their password at /admin.`,
+        );
+      } else {
+        setUserMsg(
+          `Invitation email sent to ${data.email}. Accepting the invite will direct them to /admin to set their password.`,
+        );
+      }
+
       setNewAdminEmail('');
       setNewAdminName('');
       setNewAdminPass('');
@@ -470,6 +497,17 @@ export default function AdminPanel({
       setError(err instanceof Error ? err.message : 'Could not add admin user.');
     } finally {
       setUserBusy(false);
+    }
+  }
+
+  async function copyInviteLink() {
+    if (!generatedInviteLink) return;
+    try {
+      await navigator.clipboard.writeText(generatedInviteLink);
+      setCopiedInviteLink(true);
+      setTimeout(() => setCopiedInviteLink(false), 2500);
+    } catch {
+      setError('Could not copy automatically. Please select and copy the invite link below.');
     }
   }
 
@@ -936,9 +974,21 @@ export default function AdminPanel({
                   onClick={() => {
                     setUserActionMode('invite');
                     setUserMsg('');
+                    setGeneratedInviteLink('');
                   }}
                 >
                   <Mail size={14} /> Invite by Email
+                </button>
+                <button
+                  type="button"
+                  className={userActionMode === 'link' ? 'toggle-btn active' : 'toggle-btn'}
+                  onClick={() => {
+                    setUserActionMode('link');
+                    setUserMsg('');
+                    setGeneratedInviteLink('');
+                  }}
+                >
+                  <Link2 size={14} /> Generate Invite Link
                 </button>
                 <button
                   type="button"
@@ -946,13 +996,14 @@ export default function AdminPanel({
                   onClick={() => {
                     setUserActionMode('create');
                     setUserMsg('');
+                    setGeneratedInviteLink('');
                   }}
                 >
                   <UserPlus size={14} /> Create with Password
                 </button>
               </div>
               <span className="muted">
-                Users created or invited in Supabase Authentication also sync here automatically.
+                Use Generate Invite Link or Create with Password to bypass Supabase&apos;s 2 emails/hour limit.
               </span>
             </div>
 
@@ -999,20 +1050,49 @@ export default function AdminPanel({
                 </div>
               )}
               <button type="submit" className="primary" disabled={userBusy}>
-                <UserPlus size={16} />{' '}
+                {userActionMode === 'link' ? <Link2 size={16} /> : <UserPlus size={16} />}{' '}
                 {userBusy
                   ? 'Saving…'
                   : userActionMode === 'create'
                     ? 'Create admin'
-                    : 'Send invite'}
+                    : userActionMode === 'link'
+                      ? 'Generate link'
+                      : 'Send invite'}
               </button>
             </form>
 
-            {userMsg && <div className="notice" style={{ marginBottom: 16 }}>{userMsg}</div>}
+            {userMsg && (
+              <div className="notice" style={{ marginBottom: 16 }}>
+                <div>{userMsg}</div>
+                {generatedInviteLink && (
+                  <div style={{ marginTop: 10, display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'center' }}>
+                    <input
+                      type="text"
+                      readOnly
+                      value={generatedInviteLink}
+                      onFocus={(e) => e.currentTarget.select()}
+                      style={{
+                        flex: 1,
+                        minWidth: 220,
+                        padding: '8px 10px',
+                        borderRadius: 8,
+                        border: '1px solid #bbf7d0',
+                        background: '#ffffff',
+                        fontSize: 12,
+                        color: '#10264d',
+                      }}
+                    />
+                    <button type="button" className="toggle-btn active" onClick={copyInviteLink}>
+                      <Copy size={14} /> {copiedInviteLink ? 'Copied!' : 'Copy link'}
+                    </button>
+                  </div>
+                )}
+              </div>
+            )}
 
             {adminUsers.length === 0 ? (
               <div className="admin-empty">
-                No synced admin accounts found yet. Run migration 004 in Supabase SQL Editor and click Refresh to sync Supabase Auth users.
+                No synced admin accounts found yet. Run migration 005 in Supabase SQL Editor and click Refresh to sync Supabase Auth users.
               </div>
             ) : (
               <div className="catalog-grid">

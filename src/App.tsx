@@ -97,6 +97,19 @@ function isAdminPath(): boolean {
   return pathname === '/admin' || pathname === '/app' || hash === 'admin';
 }
 
+async function readApiJson<T extends { error?: string }>(res: Response): Promise<T> {
+  const raw = await res.text();
+  if (!raw) return {} as T;
+  try {
+    return JSON.parse(raw) as T;
+  } catch {
+    const snippet = raw.replace(/<[^>]*>/g, ' ').replace(/\s+/g, ' ').trim().slice(0, 120);
+    return {
+      error: `Server returned an unexpected response (${res.status}): ${snippet || 'Not valid JSON'}`,
+    } as T;
+  }
+}
+
 const INQUIRY_DRAFT_KEY = 'tnp_inquiry_draft_v1';
 
 interface InquiryFormState {
@@ -380,7 +393,7 @@ export default function App() {
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ access_token: resolvedAccess }),
           });
-          const data = (await res.json()) as { token?: string; username?: string; error?: string };
+          const data = await readApiJson<{ token?: string; username?: string; error?: string }>(res);
           if (res.ok && data.token && active) {
             setAdminToken(data.token);
             setAdminUsername(data.username || resolvedEmail);
@@ -479,7 +492,7 @@ export default function App() {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ username: authUser.trim(), password: authPass }),
       });
-      const data = (await res.json()) as { token?: string; username?: string; error?: string };
+      const data = await readApiJson<{ token?: string; username?: string; error?: string }>(res);
       if (!res.ok || !data.token) {
         throw new Error(data.error || 'Authentication failed.');
       }
@@ -550,7 +563,7 @@ export default function App() {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(payload),
       });
-      const data = (await res.json()) as { token?: string; username?: string; error?: string };
+      const data = await readApiJson<{ token?: string; username?: string; error?: string }>(res);
       if (!res.ok || !data.token) {
         throw new Error(data.error || 'Could not complete account setup.');
       }
@@ -611,11 +624,11 @@ export default function App() {
           details: f.details,
         }),
       });
-      const data = (await res.json()) as {
+      const data = await readApiJson<{
         booking?: { reference: string };
         persisted?: 'supabase' | 'memory';
         error?: string;
-      };
+      }>(res);
       if (!res.ok) {
         throw new Error(data.error || 'Could not submit inquiry.');
       }

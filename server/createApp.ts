@@ -1750,7 +1750,8 @@ export function createApiApp(): Express {
     const email = cleanStr(req.body?.email, 160).toLowerCase();
     const fullName = cleanStr(req.body?.full_name, 120);
     const role: 'admin' | 'super_admin' = req.body?.role === 'super_admin' ? 'super_admin' : 'admin';
-    const mode = req.body?.mode === 'create' ? 'create' : 'invite';
+    const mode: 'invite' | 'link' | 'create' =
+      req.body?.mode === 'create' ? 'create' : req.body?.mode === 'link' ? 'link' : 'invite';
     const password = typeof req.body?.password === 'string' ? req.body.password : '';
 
     if (!email || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
@@ -1766,6 +1767,53 @@ export function createApiApp(): Express {
     const origin = cleanStr(req.headers.origin, 240);
     const fallbackRedirect = origin && /^https?:\/\//i.test(origin) ? `${origin.replace(/\/+$/, '')}/admin` : undefined;
     const redirectTo = validateHttpUrl(req.body?.redirectTo) || fallbackRedirect;
+
+    async function generateDirectInviteLink(): Promise<{
+      user: SupabaseMinimalUser;
+      inviteLink: string;
+      linkType: 'invite' | 'recovery';
+    } | null> {
+      if (!supabaseAdmin) return null;
+
+      let linkType: 'invite' | 'recovery' = 'invite';
+      let linkRes = await supabaseAdmin.auth.admin.generateLink({
+        type: 'invite',
+        email,
+        options: {
+          ...(redirectTo ? { redirectTo } : {}),
+          data: { ...(fullName ? { full_name: fullName } : {}), role },
+        },
+      });
+
+      if (linkRes.error && /already.*registered|already.*exists/i.test(linkRes.error.message || '')) {
+        linkType = 'recovery';
+        linkRes = await supabaseAdmin.auth.admin.generateLink({
+          type: 'recovery',
+          email,
+          options: {
+            ...(redirectTo ? { redirectTo } : {}),
+          },
+        });
+      }
+
+      if (linkRes.error || !linkRes.data?.user) {
+        return null;
+      }
+
+      const hashedToken = linkRes.data.properties?.hashed_token;
+      const directAdminUrl =
+        redirectTo && hashedToken
+          ? `${redirectTo.split('?')[0]}?token_hash=${encodeURIComponent(hashedToken)}&type=${linkType}`
+          : linkRes.data.properties?.action_link || '';
+
+      if (!directAdminUrl) return null;
+
+      return {
+        user: linkRes.data.user as unknown as SupabaseMinimalUser,
+        inviteLink: directAdminUrl,
+        linkType,
+      };
+    }
 
     try {
       if (mode === 'create') {
@@ -1787,7 +1835,46 @@ export function createApiApp(): Express {
           hasPassword: true,
           fullName: fullName || undefined,
         });
+        try {
+          await supabaseAdmin
+            .from('admin_accounts')
+            .update({ invite_method: 'password', invite_redirect_url: redirectTo || null })
+            .eq('email', email);
+        } catch {
+          // Migration 005 columns are optional
+        }
         res.status(201).json({ ok: true, mode: 'create', email });
+        return;
+      }
+
+      if (mode === 'link') {
+        const generated = await generateDirectInviteLink();
+        if (!generated) {
+          res.status(400).json({ error: 'Could not generate invite link for this email address.' });
+          return;
+        }
+        await syncSupabaseUserToTables(generated.user, {
+          role,
+          active: true,
+          authStatus: 'invited',
+          hasPassword: false,
+          fullName: fullName || undefined,
+        });
+        try {
+          await supabaseAdmin
+            .from('admin_accounts')
+            .update({ invite_method: 'link', invite_redirect_url: redirectTo || null })
+            .eq('email', email);
+        } catch {
+          // Migration 005 columns are optional
+        }
+        res.status(201).json({
+          ok: true,
+          mode: 'link',
+          email,
+          emailSent: false,
+          inviteLink: generated.inviteLink,
+        });
         return;
       }
 
@@ -1795,10 +1882,52 @@ export function createApiApp(): Express {
         ...(redirectTo ? { redirectTo } : {}),
         data: { ...(fullName ? { full_name: fullName } : {}), role },
       });
-      if (error || !data?.user) {
-        res.status(400).json({ error: error?.message || 'Could not send invitation email.' });
+
+      if (error) {
+        const errText = error.message || '';
+        const isEmailRateLimit =
+          /rate\s*limit|too\s*many\s*requests|over_email_send_rate_limit/i.test(errText) ||
+          error.status === 429;
+
+        if (isEmailRateLimit) {
+          const generated = await generateDirectInviteLink();
+          if (generated) {
+            await syncSupabaseUserToTables(generated.user, {
+              role,
+              active: true,
+              authStatus: 'invited',
+              hasPassword: false,
+              fullName: fullName || undefined,
+            });
+            try {
+              await supabaseAdmin
+                .from('admin_accounts')
+                .update({ invite_method: 'link', invite_redirect_url: redirectTo || null })
+                .eq('email', email);
+            } catch {
+              // Migration 005 columns are optional
+            }
+            res.status(201).json({
+              ok: true,
+              mode: 'link',
+              email,
+              emailSent: false,
+              rateLimitFallback: true,
+              inviteLink: generated.inviteLink,
+            });
+            return;
+          }
+        }
+
+        res.status(400).json({ error: errText || 'Could not send invitation email.' });
         return;
       }
+
+      if (!data?.user) {
+        res.status(400).json({ error: 'Could not send invitation email.' });
+        return;
+      }
+
       await syncSupabaseUserToTables(data.user as unknown as SupabaseMinimalUser, {
         role,
         active: true,
@@ -1806,7 +1935,15 @@ export function createApiApp(): Express {
         hasPassword: false,
         fullName: fullName || undefined,
       });
-      res.status(201).json({ ok: true, mode: 'invite', email });
+      try {
+        await supabaseAdmin
+          .from('admin_accounts')
+          .update({ invite_method: 'email', invite_redirect_url: redirectTo || null })
+          .eq('email', email);
+      } catch {
+        // Migration 005 columns are optional
+      }
+      res.status(201).json({ ok: true, mode: 'invite', email, emailSent: true });
     } catch {
       res.status(500).json({ error: 'Failed to process admin user request.' });
     }
