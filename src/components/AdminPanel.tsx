@@ -92,7 +92,7 @@ interface AdminPanelProps {
   token: string;
   username: string;
   onClose: () => void;
-  onLogout: () => void;
+  onLogout: (reason?: string) => void;
   onCatalogUpdated: () => void;
 }
 
@@ -214,7 +214,7 @@ export default function AdminPanel({
       ]);
 
       if (bRes.status === 401 || sRes.status === 401 || dRes.status === 401 || socRes.status === 401 || usrRes.status === 401) {
-        onLogout();
+        onLogout('Your admin session expired or could not be verified. Please sign in again.');
         return;
       }
 
@@ -615,7 +615,7 @@ export default function AdminPanel({
           <button type="button" className="admin-btn-outline" onClick={onClose}>
             Public site
           </button>
-          <button type="button" className="admin-btn-danger" onClick={onLogout}>
+          <button type="button" className="admin-btn-danger" onClick={() => onLogout()}>
             <LogOut size={15} /> Sign out
           </button>
         </div>

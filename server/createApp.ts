@@ -194,15 +194,41 @@ async function isAdminConfigured(): Promise<boolean> {
   return false;
 }
 
-function issueSessionToken(username: string): string {
+function sha256Hex(value: string): string {
+  return crypto.createHash('sha256').update(value).digest('hex');
+}
+
+async function issueSessionToken(username: string, supabaseAccessToken?: string): Promise<string> {
   const jti = crypto.randomBytes(16).toString('hex');
   const exp = Date.now() + SESSION_TTL_MS;
   const payload = Buffer.from(JSON.stringify({ sub: username, jti, exp })).toString('base64url');
   const sig = crypto.createHmac('sha256', SESSION_SECRET).update(payload).digest('base64url');
-  return `${payload}.${sig}`;
+  const hmacToken = `${payload}.${sig}`;
+
+  // If running across serverless instances without SESSION_SECRET or service role,
+  // a Supabase-signed JWT can be verified consistently by every instance.
+  if (!process.env.SESSION_SECRET && !supabaseAdmin && supabaseAccessToken) {
+    return supabaseAccessToken;
+  }
+
+  // Persist hashed session reference in Supabase audit_logs so multi-instance serverless
+  // deployments verify sessions even if SESSION_SECRET is not set in env vars.
+  if (supabaseAdmin && !process.env.SESSION_SECRET) {
+    try {
+      await supabaseAdmin.from('audit_logs').insert({
+        action: 'admin_session',
+        entity: sha256Hex(hmacToken),
+        metadata: { username, jti, exp },
+      });
+    } catch {
+      // Non-fatal if audit_logs is unavailable
+    }
+  }
+
+  return hmacToken;
 }
 
-function verifySessionToken(token: string): { username: string; jti: string } | null {
+function verifyLocalHmacToken(token: string): { username: string; jti: string; exp: number } | null {
   const parts = token.split('.');
   if (parts.length !== 2) return null;
   const [payload, sig] = parts;
@@ -229,10 +255,89 @@ function verifySessionToken(token: string): { username: string; jti: string } | 
     if (revokedExp && revokedExp > Date.now()) {
       return null;
     }
-    return { username: parsed.sub, jti: parsed.jti };
+    return { username: parsed.sub, jti: parsed.jti, exp: parsed.exp };
   } catch {
     return null;
   }
+}
+
+async function verifySessionTokenAsync(token: string): Promise<{ username: string; jti: string } | null> {
+  const tokenHash = sha256Hex(token);
+  const hashRevoked = revokedSessions.get(tokenHash);
+  if (hashRevoked && hashRevoked > Date.now()) {
+    return null;
+  }
+
+  const parts = token.split('.');
+  if (parts.length === 2) {
+    const localVerified = verifyLocalHmacToken(token);
+    if (localVerified) {
+      return { username: localVerified.username, jti: localVerified.jti };
+    }
+
+    // Cross-instance fallback via Supabase audit_logs when SESSION_SECRET isn't configured across instances
+    if (supabaseAdmin) {
+      try {
+        const { data: logs } = await supabaseAdmin
+          .from('audit_logs')
+          .select('action, metadata')
+          .eq('entity', tokenHash)
+          .in('action', ['admin_session', 'admin_session_revoked'])
+          .order('created_at', { ascending: false })
+          .limit(10);
+
+        if (Array.isArray(logs) && logs.length > 0) {
+          if (logs.some((l) => l.action === 'admin_session_revoked')) {
+            return null;
+          }
+          const sessionRow = logs.find((l) => l.action === 'admin_session');
+          const meta = (sessionRow?.metadata as { username?: string; jti?: string; exp?: number } | null) || null;
+          if (meta?.username && meta?.jti && meta?.exp && Date.now() <= meta.exp) {
+            const jtiRevoked = revokedSessions.get(meta.jti);
+            if (jtiRevoked && jtiRevoked > Date.now()) return null;
+            return { username: meta.username, jti: meta.jti };
+          }
+        }
+      } catch {
+        // Fall through
+      }
+    }
+    return null;
+  }
+
+  // Fallback for 3-part Supabase Auth JWT tokens across serverless instances
+  if (parts.length === 3 && supabasePublic && supabaseUrl && supabaseAnonKey) {
+    try {
+      const { data: userRes, error: userErr } = await supabasePublic.auth.getUser(token);
+      if (userErr || !userRes?.user?.email) {
+        return null;
+      }
+      const supaUser = userRes.user as unknown as SupabaseMinimalUser;
+      const authCheck = await isAuthorizedAdminUser(supaUser, false);
+      if (authCheck.disabled) return null;
+
+      let allowed = authCheck.allowed;
+      if (!allowed && !supabaseAdmin) {
+        const userClient = createClient(supabaseUrl, supabaseAnonKey, {
+          global: { headers: { Authorization: `Bearer ${token}` } },
+          auth: { persistSession: false, autoRefreshToken: false },
+        });
+        const { data: prof } = await userClient
+          .from('profiles')
+          .select('role')
+          .eq('id', supaUser.id)
+          .maybeSingle();
+        allowed = prof?.role === 'admin' || prof?.role === 'super_admin';
+      }
+
+      if (!allowed) return null;
+      return { username: (supaUser.email || '').trim().toLowerCase(), jti: tokenHash };
+    } catch {
+      return null;
+    }
+  }
+
+  return null;
 }
 
 function extractBearerToken(req: Request): string | null {
@@ -241,13 +346,13 @@ function extractBearerToken(req: Request): string | null {
   return auth.slice(7).trim() || null;
 }
 
-function requireAdmin(req: AuthedRequest, res: Response, next: NextFunction): void {
+async function requireAdmin(req: AuthedRequest, res: Response, next: NextFunction): Promise<void> {
   const token = extractBearerToken(req);
   if (!token) {
     res.status(401).json({ error: 'Authentication required' });
     return;
   }
-  const verified = verifySessionToken(token);
+  const verified = await verifySessionTokenAsync(token);
   if (!verified) {
     res.status(401).json({ error: 'Session expired or invalid' });
     return;
@@ -538,7 +643,7 @@ async function isAuthorizedAdminUser(user: SupabaseMinimalUser, allowInvited = f
 async function verifySupabaseAuthAdmin(
   email: string,
   password: string,
-): Promise<{ email: string | null; errorMessage?: string }> {
+): Promise<{ email: string | null; accessToken?: string; errorMessage?: string }> {
   if (!supabaseUrl || !supabaseAnonKey) return { email: null };
   try {
     if (supabaseAdmin) {
@@ -598,7 +703,7 @@ async function verifySupabaseAuthAdmin(
       hasPassword: true,
       lastSignInNow: true,
     });
-    return { email: resolvedEmail };
+    return { email: resolvedEmail, accessToken: data.session.access_token };
   } catch {
     return { email: null };
   }
@@ -738,7 +843,7 @@ export function createApiApp(): Express {
   // Admin auth status (never returns credentials or hints)
   app.get('/api/admin/status', async (req, res) => {
     const token = extractBearerToken(req);
-    const verified = token ? verifySessionToken(token) : null;
+    const verified = token ? await verifySessionTokenAsync(token) : null;
     const configured = await isAdminConfigured();
     res.json({
       configured,
@@ -791,7 +896,7 @@ export function createApiApp(): Express {
       claimedAdmin = { username, salt, hash };
     }
 
-    const token = issueSessionToken(username);
+    const token = await issueSessionToken(username);
     res.status(201).json({ token, username, storedInSupabase });
   });
 
@@ -815,6 +920,7 @@ export function createApiApp(): Express {
     let authedUsername = username;
     let accountDisabled = false;
     let authErrorMessage = '';
+    let supabaseAccessToken: string | undefined;
 
     if (isEnvConfigured()) {
       const expectedUser = (process.env.ADMIN_USERNAME || 'admin').trim();
@@ -858,6 +964,7 @@ export function createApiApp(): Express {
       if (supaCheck.email) {
         valid = true;
         authedUsername = supaCheck.email;
+        supabaseAccessToken = supaCheck.accessToken;
       } else if (supaCheck.errorMessage) {
         authErrorMessage = supaCheck.errorMessage;
       }
@@ -886,7 +993,7 @@ export function createApiApp(): Express {
       return;
     }
 
-    const token = issueSessionToken(authedUsername);
+    const token = await issueSessionToken(authedUsername, supabaseAccessToken);
     res.json({ token, username: authedUsername });
   });
 
@@ -940,7 +1047,7 @@ export function createApiApp(): Express {
       });
 
       const email = (supaUser.email || '').trim().toLowerCase();
-      const token = issueSessionToken(email);
+      const token = await issueSessionToken(email, accessToken);
       res.json({ token, username: email });
     } catch {
       res.status(401).json({ error: 'Could not verify Supabase session.' });
@@ -1060,7 +1167,7 @@ export function createApiApp(): Express {
       });
 
       const email = (supaUser.email || '').trim().toLowerCase();
-      const token = issueSessionToken(email);
+      const token = await issueSessionToken(email, activeAccessToken || undefined);
       res.json({ token, username: email });
     } catch {
       res.status(500).json({ error: 'Unable to complete invitation setup.' });
@@ -1068,9 +1175,25 @@ export function createApiApp(): Express {
   });
 
   // Admin logout
-  app.post('/api/admin/logout', requireAdmin, (req: AuthedRequest, res) => {
+  app.post('/api/admin/logout', requireAdmin, async (req: AuthedRequest, res) => {
+    const token = extractBearerToken(req);
     if (req.adminUser?.jti) {
       revokedSessions.set(req.adminUser.jti, Date.now() + SESSION_TTL_MS);
+    }
+    if (token) {
+      const tokenHash = sha256Hex(token);
+      revokedSessions.set(tokenHash, Date.now() + SESSION_TTL_MS);
+      if (supabaseAdmin) {
+        try {
+          await supabaseAdmin.from('audit_logs').insert({
+            action: 'admin_session_revoked',
+            entity: tokenHash,
+            metadata: { username: req.adminUser?.username || null },
+          });
+        } catch {
+          // Non-fatal
+        }
+      }
     }
     res.json({ ok: true });
   });

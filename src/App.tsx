@@ -454,9 +454,6 @@ export default function App() {
 
   useEffect(() => {
     if (isAdminRoute && !adminToken) {
-      if (!inviteMode) {
-        setAuthError('');
-      }
       setAuthPass('');
       setAuthConfirm('');
       setShowAuthPass(false);
@@ -464,7 +461,7 @@ export default function App() {
       setForceLoginMode(false);
       checkAdminStatus();
     }
-  }, [isAdminRoute, adminToken, inviteMode, checkAdminStatus]);
+  }, [isAdminRoute, adminToken, checkAdminStatus]);
 
   function navigateTo(targetPath: '/' | '/admin') {
     if (window.location.pathname !== targetPath) {
@@ -587,22 +584,29 @@ export default function App() {
     }
   }
 
-  async function handleAdminLogout() {
-    const token = adminToken;
-    setAdminToken(null);
-    setAdminUsername('');
-    if (token) {
-      try {
-        await fetch('/api/admin/logout', {
-          method: 'POST',
-          headers: { Authorization: `Bearer ${token}` },
-        });
-      } catch {
-        // Ignore network errors on logout
+  const handleAdminLogout = useCallback(
+    async (reason?: string) => {
+      const token = adminToken;
+      setAdminToken(null);
+      setAdminUsername('');
+      setAuthError(typeof reason === 'string' ? reason : '');
+      if (token) {
+        try {
+          await fetch('/api/admin/logout', {
+            method: 'POST',
+            headers: { Authorization: `Bearer ${token}` },
+          });
+        } catch {
+          // Ignore network errors on logout
+        }
       }
-    }
-    navigateTo('/admin');
-  }
+      if (window.location.pathname !== '/admin') {
+        window.history.pushState({}, '', '/admin');
+      }
+      setIsAdminRoute(true);
+    },
+    [adminToken],
+  );
 
   async function submit(e: React.FormEvent) {
     e.preventDefault();
