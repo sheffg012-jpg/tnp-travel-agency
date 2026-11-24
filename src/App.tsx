@@ -92,7 +92,9 @@ function isSafeHttpUrl(rawUrl: string): boolean {
 
 function isAdminPath(): boolean {
   if (typeof window === 'undefined') return false;
-  return window.location.pathname.replace(/\/+$/, '') === '/admin';
+  const pathname = window.location.pathname.replace(/\/+$/, '');
+  const hash = window.location.hash.replace(/^#\/?/, '').replace(/\/+$/, '');
+  return pathname === '/admin' || pathname === '/app' || hash === 'admin';
 }
 
 export default function App() {
@@ -178,11 +180,20 @@ export default function App() {
   }, [fetchCatalog]);
 
   useEffect(() => {
-    const onPopState = () => {
+    const onLocationChange = () => {
+      const pathname = window.location.pathname.replace(/\/+$/, '');
+      if (pathname === '/app') {
+        window.history.replaceState({}, '', '/admin');
+      }
       setIsAdminRoute(isAdminPath());
     };
-    window.addEventListener('popstate', onPopState);
-    return () => window.removeEventListener('popstate', onPopState);
+    onLocationChange();
+    window.addEventListener('popstate', onLocationChange);
+    window.addEventListener('hashchange', onLocationChange);
+    return () => {
+      window.removeEventListener('popstate', onLocationChange);
+      window.removeEventListener('hashchange', onLocationChange);
+    };
   }, []);
 
   useEffect(() => {
