@@ -72,6 +72,22 @@ interface ClaimedAdmin {
   hash: string;
 }
 
+interface AdminUserRecord {
+  id: string;
+  auth_user_id: string | null;
+  email: string;
+  full_name: string;
+  role: 'admin' | 'super_admin';
+  active: boolean;
+  auth_provider: string;
+  auth_status: 'invited' | 'active' | 'disabled';
+  has_password: boolean;
+  invited_at: string | null;
+  confirmed_at: string | null;
+  last_sign_in_at: string | null;
+  created_at: string;
+}
+
 interface AuthedRequest extends Request {
   adminUser?: { username: string; jti: string };
 }
@@ -321,24 +337,242 @@ function mapSupabaseSocialLink(row: Record<string, unknown>): SocialLinkRecord {
   };
 }
 
-async function verifySupabaseAuthAdmin(email: string, password: string): Promise<string | null> {
-  if (!supabaseUrl || !supabaseAnonKey) return null;
+interface SupabaseMinimalUser {
+  id: string;
+  email?: string | null;
+  phone?: string | null;
+  invited_at?: string | null;
+  email_confirmed_at?: string | null;
+  confirmed_at?: string | null;
+  last_sign_in_at?: string | null;
+  created_at?: string | null;
+  banned_until?: string | null;
+  app_metadata?: Record<string, unknown>;
+  user_metadata?: Record<string, unknown>;
+}
+
+function deriveAuthStatus(user: SupabaseMinimalUser, activeOverride?: boolean): 'invited' | 'active' | 'disabled' {
+  if (activeOverride === false) return 'disabled';
+  if (user.banned_until && new Date(user.banned_until).getTime() > Date.now()) {
+    return 'disabled';
+  }
+  const confirmed = user.email_confirmed_at || user.confirmed_at;
+  if (user.invited_at && !confirmed) return 'invited';
+  return 'active';
+}
+
+async function syncSupabaseUserToTables(
+  user: SupabaseMinimalUser,
+  options?: {
+    role?: 'admin' | 'super_admin';
+    active?: boolean;
+    authStatus?: 'invited' | 'active' | 'disabled';
+    hasPassword?: boolean;
+    lastSignInNow?: boolean;
+    fullName?: string;
+  },
+): Promise<void> {
+  if (!supabaseAdmin || !user.email) return;
+
+  const email = user.email.trim().toLowerCase();
+  const provider =
+    typeof user.app_metadata?.provider === 'string' && user.app_metadata.provider
+      ? user.app_metadata.provider
+      : 'email';
+  const metaName =
+    options?.fullName ||
+    (typeof user.user_metadata?.full_name === 'string' && user.user_metadata.full_name) ||
+    (typeof user.user_metadata?.name === 'string' && user.user_metadata.name) ||
+    email.split('@')[0];
+  const confirmedAt = user.email_confirmed_at || user.confirmed_at || (options?.authStatus === 'active' ? new Date().toISOString() : null);
+  const lastSignInAt = options?.lastSignInNow ? new Date().toISOString() : user.last_sign_in_at || null;
+
   try {
+    const { data: existingAcc } = await supabaseAdmin
+      .from('admin_accounts')
+      .select('id, role, active, auth_metadata')
+      .or(`auth_user_id.eq.${user.id},email.eq.${email}`)
+      .maybeSingle();
+
+    const { data: existingProf } = await supabaseAdmin
+      .from('profiles')
+      .select('role')
+      .eq('id', user.id)
+      .maybeSingle();
+
+    const resolvedRole: 'admin' | 'super_admin' =
+      options?.role ||
+      (existingAcc?.role === 'super_admin' || existingProf?.role === 'super_admin' ? 'super_admin' : 'admin');
+    const resolvedActive =
+      options?.active !== undefined
+        ? options.active
+        : existingAcc?.active !== undefined
+          ? Boolean(existingAcc.active)
+          : true;
+    const resolvedStatus = options?.authStatus || deriveAuthStatus(user, resolvedActive);
+    const prevMeta = (existingAcc?.auth_metadata as Record<string, unknown> | null) || {};
+    const authMeta = {
+      ...prevMeta,
+      providers: Array.isArray(user.app_metadata?.providers) ? user.app_metadata.providers : [provider],
+      email_verified: Boolean(confirmedAt),
+      ...(options?.hasPassword !== undefined ? { has_password: options.hasPassword } : {}),
+    };
+
+    // Sync public.profiles (graceful fallback if 004 columns aren't added yet)
+    const { error: profErr } = await supabaseAdmin.from('profiles').upsert(
+      {
+        id: user.id,
+        email,
+        full_name: metaName,
+        phone: user.phone || null,
+        role: resolvedRole,
+        auth_provider: provider,
+        email_confirmed_at: confirmedAt,
+        last_sign_in_at: lastSignInAt,
+      },
+      { onConflict: 'id' },
+    );
+
+    if (profErr) {
+      await supabaseAdmin.from('profiles').upsert(
+        {
+          id: user.id,
+          full_name: metaName,
+          role: resolvedRole,
+        },
+        { onConflict: 'id' },
+      );
+    }
+
+    // Sync public.admin_accounts
+    if (existingAcc?.id) {
+      const { error: accUpdErr } = await supabaseAdmin
+        .from('admin_accounts')
+        .update({
+          auth_user_id: user.id,
+          email,
+          full_name: metaName,
+          role: resolvedRole,
+          active: resolvedActive,
+          auth_provider: provider,
+          auth_status: resolvedStatus,
+          invited_at: user.invited_at || null,
+          confirmed_at: confirmedAt,
+          last_sign_in_at: lastSignInAt,
+          auth_metadata: authMeta,
+        })
+        .eq('id', existingAcc.id);
+
+      if (accUpdErr) {
+        await supabaseAdmin
+          .from('admin_accounts')
+          .update({ email, role: resolvedRole, active: resolvedActive })
+          .eq('id', existingAcc.id);
+      }
+    } else {
+      const { error: accInsErr } = await supabaseAdmin.from('admin_accounts').insert({
+        auth_user_id: user.id,
+        email,
+        full_name: metaName,
+        role: resolvedRole,
+        active: resolvedActive,
+        auth_provider: provider,
+        auth_status: resolvedStatus,
+        invited_at: user.invited_at || null,
+        confirmed_at: confirmedAt,
+        last_sign_in_at: lastSignInAt,
+        auth_metadata: authMeta,
+      });
+
+      if (accInsErr) {
+        await supabaseAdmin.from('admin_accounts').insert({
+          email,
+          password_hash: '',
+          password_salt: '',
+          role: resolvedRole,
+          active: resolvedActive,
+        });
+      }
+    }
+  } catch {
+    // Non-fatal if migration 004 has not been applied yet
+  }
+}
+
+async function isAuthorizedAdminUser(user: SupabaseMinimalUser, allowInvited = false): Promise<{ allowed: boolean; disabled: boolean }> {
+  const email = (user.email || '').trim().toLowerCase();
+  if (!email) return { allowed: false, disabled: false };
+
+  let accActive: boolean | null = null;
+  let profRole: string | null = null;
+
+  if (supabaseAdmin) {
+    try {
+      const [{ data: acc }, { data: prof }] = await Promise.all([
+        supabaseAdmin
+          .from('admin_accounts')
+          .select('active')
+          .or(`auth_user_id.eq.${user.id},email.eq.${email}`)
+          .maybeSingle(),
+        supabaseAdmin.from('profiles').select('role').eq('id', user.id).maybeSingle(),
+      ]);
+      if (acc) accActive = acc.active !== false;
+      if (prof && typeof prof.role === 'string') profRole = prof.role;
+    } catch {
+      // Ignore missing table errors
+    }
+  }
+
+  if (accActive === false) {
+    return { allowed: false, disabled: true };
+  }
+  if (profRole === 'admin' || profRole === 'super_admin' || accActive === true) {
+    return { allowed: true, disabled: false };
+  }
+  if (allowInvited && Boolean(user.invited_at)) {
+    return { allowed: true, disabled: false };
+  }
+  return { allowed: false, disabled: false };
+}
+
+async function verifySupabaseAuthAdmin(
+  email: string,
+  password: string,
+): Promise<{ email: string | null; errorMessage?: string }> {
+  if (!supabaseUrl || !supabaseAnonKey) return { email: null };
+  try {
+    if (supabaseAdmin) {
+      const { data: acc } = await supabaseAdmin
+        .from('admin_accounts')
+        .select('active')
+        .eq('email', email)
+        .maybeSingle();
+      if (acc && acc.active === false) {
+        return { email: null, errorMessage: 'This administrator account is disabled.' };
+      }
+    }
+
     const authClient = createClient(supabaseUrl, supabaseAnonKey, {
       auth: { persistSession: false, autoRefreshToken: false },
     });
     const { data, error } = await authClient.auth.signInWithPassword({ email, password });
-    if (error || !data.user || !data.session) return null;
-
-    if (supabaseAdmin) {
-      const { data: prof } = await supabaseAdmin
-        .from('profiles')
-        .select('role')
-        .eq('id', data.user.id)
-        .maybeSingle();
-      if (prof?.role === 'admin' || prof?.role === 'super_admin') {
-        return data.user.email || email;
+    if (error || !data.user || !data.session) {
+      if (error?.message && /confirm/i.test(error.message)) {
+        return {
+          email: null,
+          errorMessage: 'Email is not confirmed yet. Check your inbox or confirm this user in Supabase Authentication.',
+        };
       }
+      return { email: null };
+    }
+
+    let isAdmin = false;
+    if (supabaseAdmin) {
+      const authCheck = await isAuthorizedAdminUser(data.user as unknown as SupabaseMinimalUser, false);
+      if (authCheck.disabled) {
+        return { email: null, errorMessage: 'This administrator account is disabled.' };
+      }
+      isAdmin = authCheck.allowed;
     } else {
       const userClient = createClient(supabaseUrl, supabaseAnonKey, {
         global: { headers: { Authorization: `Bearer ${data.session.access_token}` } },
@@ -350,12 +584,23 @@ async function verifySupabaseAuthAdmin(email: string, password: string): Promise
         .eq('id', data.user.id)
         .maybeSingle();
       if (prof?.role === 'admin' || prof?.role === 'super_admin') {
-        return data.user.email || email;
+        isAdmin = true;
       }
     }
-    return null;
+
+    if (!isAdmin) {
+      return { email: null };
+    }
+
+    const resolvedEmail = (data.user.email || email).toLowerCase();
+    await syncSupabaseUserToTables(data.user as unknown as SupabaseMinimalUser, {
+      authStatus: 'active',
+      hasPassword: true,
+      lastSignInNow: true,
+    });
+    return { email: resolvedEmail };
   } catch {
-    return null;
+    return { email: null };
   }
 }
 
@@ -568,6 +813,8 @@ export function createApiApp(): Express {
 
     let valid = false;
     let authedUsername = username;
+    let accountDisabled = false;
+    let authErrorMessage = '';
 
     if (isEnvConfigured()) {
       const expectedUser = (process.env.ADMIN_USERNAME || 'admin').trim();
@@ -580,14 +827,20 @@ export function createApiApp(): Express {
       try {
         const { data: acc } = await supabaseAdmin
           .from('admin_accounts')
-          .select('email, password_hash, password_salt, active')
+          .select('id, email, password_hash, password_salt, active')
           .eq('email', normalizedEmail)
           .maybeSingle();
 
-        if (acc && acc.active !== false && typeof acc.password_hash === 'string' && typeof acc.password_salt === 'string') {
+        if (acc && acc.active === false) {
+          accountDisabled = true;
+        } else if (acc && typeof acc.password_hash === 'string' && acc.password_hash && typeof acc.password_salt === 'string' && acc.password_salt) {
           if (verifyScryptPassword(password, acc.password_salt, acc.password_hash)) {
             valid = true;
             authedUsername = String(acc.email);
+            await supabaseAdmin
+              .from('admin_accounts')
+              .update({ last_sign_in_at: new Date().toISOString(), auth_status: 'active' })
+              .eq('id', acc.id);
           }
         }
       } catch {
@@ -595,11 +848,18 @@ export function createApiApp(): Express {
       }
     }
 
+    if (accountDisabled) {
+      res.status(403).json({ error: 'This administrator account is disabled.' });
+      return;
+    }
+
     if (!valid && supabasePublic && normalizedEmail.includes('@')) {
-      const supabaseAuthUser = await verifySupabaseAuthAdmin(normalizedEmail, password);
-      if (supabaseAuthUser) {
+      const supaCheck = await verifySupabaseAuthAdmin(normalizedEmail, password);
+      if (supaCheck.email) {
         valid = true;
-        authedUsername = supabaseAuthUser;
+        authedUsername = supaCheck.email;
+      } else if (supaCheck.errorMessage) {
+        authErrorMessage = supaCheck.errorMessage;
       }
     }
 
@@ -614,6 +874,10 @@ export function createApiApp(): Express {
     }
 
     if (!valid) {
+      if (authErrorMessage) {
+        res.status(401).json({ error: authErrorMessage });
+        return;
+      }
       if (!(await isAdminConfigured()) && !supabasePublic) {
         res.status(409).json({ error: 'Admin credentials are not initialized yet.' });
         return;
@@ -626,6 +890,183 @@ export function createApiApp(): Express {
     res.json({ token, username: authedUsername });
   });
 
+  // Exchange a verified Supabase Auth session (after invite acceptance or password update) for an admin session token
+  app.post('/api/admin/supabase-session', async (req, res) => {
+    if (!supabasePublic || !supabaseUrl || !supabaseAnonKey) {
+      res.status(503).json({ error: 'Supabase authentication is not configured on the server.' });
+      return;
+    }
+
+    const accessToken = cleanStr(req.body?.access_token, 4096) || extractBearerToken(req);
+    if (!accessToken) {
+      res.status(400).json({ error: 'Supabase session token is required.' });
+      return;
+    }
+
+    try {
+      const { data: userRes, error: userErr } = await supabasePublic.auth.getUser(accessToken);
+      if (userErr || !userRes?.user?.email) {
+        res.status(401).json({ error: 'Invalid or expired Supabase session.' });
+        return;
+      }
+
+      const supaUser = userRes.user as unknown as SupabaseMinimalUser;
+      const authCheck = await isAuthorizedAdminUser(supaUser, true);
+      if (authCheck.disabled) {
+        res.status(403).json({ error: 'This administrator account is disabled.' });
+        return;
+      }
+      if (!authCheck.allowed) {
+        // Check with user's own JWT against public.profiles in case supabaseAdmin is not configured
+        const userClient = createClient(supabaseUrl, supabaseAnonKey, {
+          global: { headers: { Authorization: `Bearer ${accessToken}` } },
+          auth: { persistSession: false, autoRefreshToken: false },
+        });
+        const { data: prof } = await userClient
+          .from('profiles')
+          .select('role')
+          .eq('id', supaUser.id)
+          .maybeSingle();
+        if (prof?.role !== 'admin' && prof?.role !== 'super_admin' && !supaUser.invited_at) {
+          res.status(403).json({ error: 'This account does not have administrator access.' });
+          return;
+        }
+      }
+
+      await syncSupabaseUserToTables(supaUser, {
+        authStatus: 'active',
+        hasPassword: req.body?.password_set === true ? true : undefined,
+        lastSignInNow: true,
+      });
+
+      const email = (supaUser.email || '').trim().toLowerCase();
+      const token = issueSessionToken(email);
+      res.json({ token, username: email });
+    } catch {
+      res.status(401).json({ error: 'Could not verify Supabase session.' });
+    }
+  });
+
+  // Accept Supabase invite or recovery link, set password, sync admin record, and enter dashboard
+  app.post('/api/admin/accept-invite', async (req, res) => {
+    if (!checkRateLimit(req)) {
+      res.status(429).json({ error: 'Too many attempts. Please try again later.' });
+      return;
+    }
+    if (!supabasePublic || !supabaseUrl || !supabaseAnonKey) {
+      res.status(503).json({ error: 'Supabase authentication is not configured on the server.' });
+      return;
+    }
+
+    const password = typeof req.body?.password === 'string' ? req.body.password : '';
+    if (password.length < 5) {
+      res.status(400).json({ error: 'Password must be at least 5 characters.' });
+      return;
+    }
+
+    const accessToken = cleanStr(req.body?.access_token, 4096);
+    const refreshToken = cleanStr(req.body?.refresh_token, 4096);
+    const tokenHash = cleanStr(req.body?.token_hash, 512);
+    const otpType = cleanStr(req.body?.type, 40) || 'invite';
+
+    try {
+      let supaUser: SupabaseMinimalUser | null = null;
+      let activeAccessToken = accessToken;
+      let activeRefreshToken = refreshToken;
+
+      if (accessToken) {
+        const { data, error } = await supabasePublic.auth.getUser(accessToken);
+        if (!error && data?.user) {
+          supaUser = data.user as unknown as SupabaseMinimalUser;
+        }
+      } else if (tokenHash) {
+        const verifyClient = createClient(supabaseUrl, supabaseAnonKey, {
+          auth: { persistSession: false, autoRefreshToken: false },
+        });
+        const { data, error } = await verifyClient.auth.verifyOtp({
+          token_hash: tokenHash,
+          type: otpType === 'recovery' ? 'recovery' : 'invite',
+        });
+        if (!error && data?.user) {
+          supaUser = data.user as unknown as SupabaseMinimalUser;
+          activeAccessToken = data.session?.access_token || '';
+          activeRefreshToken = data.session?.refresh_token || '';
+        }
+      }
+
+      if (!supaUser || !supaUser.email) {
+        res.status(401).json({ error: 'Invitation link is invalid or has expired. Please request a new invite.' });
+        return;
+      }
+
+      const authCheck = await isAuthorizedAdminUser(supaUser, true);
+      if (authCheck.disabled) {
+        res.status(403).json({ error: 'This administrator account is disabled.' });
+        return;
+      }
+      if (!authCheck.allowed && !supabaseAdmin && activeAccessToken) {
+        const userClient = createClient(supabaseUrl, supabaseAnonKey, {
+          global: { headers: { Authorization: `Bearer ${activeAccessToken}` } },
+          auth: { persistSession: false, autoRefreshToken: false },
+        });
+        const { data: prof } = await userClient
+          .from('profiles')
+          .select('role')
+          .eq('id', supaUser.id)
+          .maybeSingle();
+        if (prof?.role !== 'admin' && prof?.role !== 'super_admin' && !supaUser.invited_at) {
+          res.status(403).json({ error: 'This account does not have administrator access.' });
+          return;
+        }
+      }
+
+      if (supabaseAdmin) {
+        const { data: updData, error: updErr } = await supabaseAdmin.auth.admin.updateUserById(supaUser.id, {
+          password,
+          email_confirm: true,
+        });
+        if (updErr) {
+          res.status(400).json({ error: updErr.message || 'Could not save password.' });
+          return;
+        }
+        if (updData?.user) {
+          supaUser = updData.user as unknown as SupabaseMinimalUser;
+        }
+      } else if (activeAccessToken && activeRefreshToken) {
+        const userClient = createClient(supabaseUrl, supabaseAnonKey, {
+          auth: { persistSession: false, autoRefreshToken: false },
+        });
+        await userClient.auth.setSession({
+          access_token: activeAccessToken,
+          refresh_token: activeRefreshToken,
+        });
+        const { data: updData, error: updErr } = await userClient.auth.updateUser({ password });
+        if (updErr) {
+          res.status(400).json({ error: updErr.message || 'Could not save password.' });
+          return;
+        }
+        if (updData?.user) {
+          supaUser = updData.user as unknown as SupabaseMinimalUser;
+        }
+      } else {
+        res.status(400).json({ error: 'Missing Supabase session or service key to complete password setup.' });
+        return;
+      }
+
+      await syncSupabaseUserToTables(supaUser, {
+        authStatus: 'active',
+        hasPassword: true,
+        lastSignInNow: true,
+      });
+
+      const email = (supaUser.email || '').trim().toLowerCase();
+      const token = issueSessionToken(email);
+      res.json({ token, username: email });
+    } catch {
+      res.status(500).json({ error: 'Unable to complete invitation setup.' });
+    }
+  });
+
   // Admin logout
   app.post('/api/admin/logout', requireAdmin, (req: AuthedRequest, res) => {
     if (req.adminUser?.jti) {
@@ -634,7 +1075,7 @@ export function createApiApp(): Express {
     res.json({ ok: true });
   });
 
-  // Admin password update
+  // Admin password update (works for both local admin_accounts and Supabase Auth users)
   app.post('/api/admin/change-password', requireAdmin, async (req: AuthedRequest, res) => {
     if (!checkRateLimit(req)) {
       res.status(429).json({ error: 'Too many attempts. Please try again later.' });
@@ -664,11 +1105,12 @@ export function createApiApp(): Express {
       try {
         const { data: acc } = await supabaseAdmin
           .from('admin_accounts')
-          .select('id, password_hash, password_salt')
+          .select('id, auth_user_id, password_hash, password_salt')
           .eq('email', username)
           .maybeSingle();
 
-        if (acc && typeof acc.password_hash === 'string' && typeof acc.password_salt === 'string') {
+        // Local scrypt password update
+        if (acc && typeof acc.password_hash === 'string' && acc.password_hash && typeof acc.password_salt === 'string' && acc.password_salt) {
           if (!verifyScryptPassword(currentPassword, acc.password_salt, acc.password_hash)) {
             res.status(401).json({ error: 'Current password is incorrect.' });
             return;
@@ -685,6 +1127,35 @@ export function createApiApp(): Express {
             return;
           }
           updatedInSupabase = true;
+        }
+
+        // Also verify & update Supabase Auth password if this user exists in auth.users
+        if (supabaseUrl && supabaseAnonKey && username.includes('@')) {
+          const verifyClient = createClient(supabaseUrl, supabaseAnonKey, {
+            auth: { persistSession: false, autoRefreshToken: false },
+          });
+          const { data: signInData, error: signInErr } = await verifyClient.auth.signInWithPassword({
+            email: username,
+            password: currentPassword,
+          });
+          if (!signInErr && signInData?.user) {
+            verified = true;
+            const { error: authUpdErr } = await supabaseAdmin.auth.admin.updateUserById(signInData.user.id, {
+              password: newPassword,
+            });
+            if (authUpdErr) {
+              res.status(500).json({ error: authUpdErr.message || 'Could not update Supabase Auth password.' });
+              return;
+            }
+            await syncSupabaseUserToTables(signInData.user as unknown as SupabaseMinimalUser, {
+              authStatus: 'active',
+              hasPassword: true,
+            });
+            updatedInSupabase = true;
+          } else if (!verified && acc?.auth_user_id) {
+            res.status(401).json({ error: 'Current password is incorrect.' });
+            return;
+          }
         }
       } catch {
         // Fall through to claimedAdmin check
@@ -704,7 +1175,7 @@ export function createApiApp(): Express {
 
     if (!verified) {
       res.status(400).json({
-        error: 'Unable to update password for this account type. Update it in Supabase Authentication or Settings -> Secrets.',
+        error: 'Unable to update password for this account type. Ensure SUPABASE_SERVICE_ROLE_KEY is configured.',
       });
       return;
     }
@@ -1203,6 +1674,206 @@ export function createApiApp(): Express {
     }
     socialLinks.splice(idx, 1);
     res.json({ ok: true });
+  });
+
+  // Admin team accounts management (synced with Supabase Auth & public.admin_accounts)
+  app.get('/api/admin/users', requireAdmin, async (_req, res) => {
+    if (!supabaseAdmin) {
+      res.json({ users: [], supabaseConnected: false });
+      return;
+    }
+
+    try {
+      // Pull live Supabase Auth users and auto-sync any created/invited in Supabase Dashboard
+      const { data: authList } = await supabaseAdmin.auth.admin.listUsers({ page: 1, perPage: 200 });
+      if (authList?.users && Array.isArray(authList.users)) {
+        for (const u of authList.users) {
+          if (u.email) {
+            await syncSupabaseUserToTables(u as unknown as SupabaseMinimalUser);
+          }
+        }
+      }
+
+      const { data: accRows, error } = await supabaseAdmin
+        .from('admin_accounts')
+        .select('id, auth_user_id, email, full_name, role, active, auth_provider, auth_status, invited_at, confirmed_at, last_sign_in_at, auth_metadata, password_hash, created_at')
+        .order('created_at', { ascending: false });
+
+      if (error || !Array.isArray(accRows)) {
+        res.status(500).json({ error: error?.message || 'Could not load admin accounts.' });
+        return;
+      }
+
+      const users: AdminUserRecord[] = accRows.map((row) => {
+        const r = row as Record<string, unknown>;
+        const meta = (r.auth_metadata as Record<string, unknown> | null) || {};
+        const hasLocalPass = typeof r.password_hash === 'string' && r.password_hash.length > 0;
+        const hasAuthPass = Boolean(meta.has_password);
+        const active = Boolean(r.active ?? true);
+        const rawStatus = String(r.auth_status || (active ? 'active' : 'disabled'));
+        const authStatus: AdminUserRecord['auth_status'] =
+          !active || rawStatus === 'disabled'
+            ? 'disabled'
+            : rawStatus === 'invited'
+              ? 'invited'
+              : 'active';
+
+        return {
+          id: String(r.id),
+          auth_user_id: r.auth_user_id ? String(r.auth_user_id) : null,
+          email: String(r.email || ''),
+          full_name: String(r.full_name || ''),
+          role: r.role === 'super_admin' ? 'super_admin' : 'admin',
+          active,
+          auth_provider: String(r.auth_provider || 'email'),
+          auth_status: authStatus,
+          has_password: hasLocalPass || hasAuthPass,
+          invited_at: r.invited_at ? String(r.invited_at) : null,
+          confirmed_at: r.confirmed_at ? String(r.confirmed_at) : null,
+          last_sign_in_at: r.last_sign_in_at ? String(r.last_sign_in_at) : null,
+          created_at: String(r.created_at || new Date().toISOString()),
+        };
+      });
+
+      res.json({ users, supabaseConnected: true });
+    } catch {
+      res.status(500).json({ error: 'Could not load admin accounts.' });
+    }
+  });
+
+  app.post('/api/admin/users/invite', requireAdmin, async (req, res) => {
+    if (!supabaseAdmin) {
+      res.status(503).json({ error: 'SUPABASE_SERVICE_ROLE_KEY is required to invite or create Supabase users.' });
+      return;
+    }
+
+    const email = cleanStr(req.body?.email, 160).toLowerCase();
+    const fullName = cleanStr(req.body?.full_name, 120);
+    const role: 'admin' | 'super_admin' = req.body?.role === 'super_admin' ? 'super_admin' : 'admin';
+    const mode = req.body?.mode === 'create' ? 'create' : 'invite';
+    const password = typeof req.body?.password === 'string' ? req.body.password : '';
+
+    if (!email || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
+      res.status(400).json({ error: 'Please provide a valid email address.' });
+      return;
+    }
+
+    if (mode === 'create' && password.length < 5) {
+      res.status(400).json({ error: 'Password must be at least 5 characters when creating a user directly.' });
+      return;
+    }
+
+    const origin = cleanStr(req.headers.origin, 240);
+    const fallbackRedirect = origin && /^https?:\/\//i.test(origin) ? `${origin.replace(/\/+$/, '')}/admin` : undefined;
+    const redirectTo = validateHttpUrl(req.body?.redirectTo) || fallbackRedirect;
+
+    try {
+      if (mode === 'create') {
+        const { data, error } = await supabaseAdmin.auth.admin.createUser({
+          email,
+          password,
+          email_confirm: true,
+          user_metadata: fullName ? { full_name: fullName } : {},
+          app_metadata: { role },
+        });
+        if (error || !data?.user) {
+          res.status(400).json({ error: error?.message || 'Could not create Supabase user.' });
+          return;
+        }
+        await syncSupabaseUserToTables(data.user as unknown as SupabaseMinimalUser, {
+          role,
+          active: true,
+          authStatus: 'active',
+          hasPassword: true,
+          fullName: fullName || undefined,
+        });
+        res.status(201).json({ ok: true, mode: 'create', email });
+        return;
+      }
+
+      const { data, error } = await supabaseAdmin.auth.admin.inviteUserByEmail(email, {
+        ...(redirectTo ? { redirectTo } : {}),
+        data: { ...(fullName ? { full_name: fullName } : {}), role },
+      });
+      if (error || !data?.user) {
+        res.status(400).json({ error: error?.message || 'Could not send invitation email.' });
+        return;
+      }
+      await syncSupabaseUserToTables(data.user as unknown as SupabaseMinimalUser, {
+        role,
+        active: true,
+        authStatus: 'invited',
+        hasPassword: false,
+        fullName: fullName || undefined,
+      });
+      res.status(201).json({ ok: true, mode: 'invite', email });
+    } catch {
+      res.status(500).json({ error: 'Failed to process admin user request.' });
+    }
+  });
+
+  app.patch('/api/admin/users/:id', requireAdmin, async (req: AuthedRequest, res) => {
+    if (!supabaseAdmin) {
+      res.status(503).json({ error: 'SUPABASE_SERVICE_ROLE_KEY is required to update admin accounts.' });
+      return;
+    }
+
+    const { data: existing, error: findErr } = await supabaseAdmin
+      .from('admin_accounts')
+      .select('id, auth_user_id, email, role, active')
+      .eq('id', req.params.id)
+      .maybeSingle();
+
+    if (findErr || !existing) {
+      res.status(404).json({ error: 'Admin account not found.' });
+      return;
+    }
+
+    const currentActor = (req.adminUser?.username || '').trim().toLowerCase();
+    const targetEmail = String(existing.email || '').trim().toLowerCase();
+    const nextActive = typeof req.body?.active === 'boolean' ? req.body.active : Boolean(existing.active);
+    const nextRole: 'admin' | 'super_admin' =
+      req.body?.role === 'super_admin'
+        ? 'super_admin'
+        : req.body?.role === 'admin'
+          ? 'admin'
+          : existing.role === 'super_admin'
+            ? 'super_admin'
+            : 'admin';
+
+    if (currentActor === targetEmail && !nextActive) {
+      res.status(400).json({ error: 'You cannot disable your own active administrator account.' });
+      return;
+    }
+
+    const nextStatus = nextActive ? 'active' : 'disabled';
+    const { error: updErr } = await supabaseAdmin
+      .from('admin_accounts')
+      .update({
+        active: nextActive,
+        role: nextRole,
+        auth_status: nextStatus,
+      })
+      .eq('id', req.params.id);
+
+    if (updErr) {
+      res.status(400).json({ error: updErr.message || 'Could not update admin account.' });
+      return;
+    }
+
+    if (existing.auth_user_id) {
+      await supabaseAdmin
+        .from('profiles')
+        .update({ role: nextActive ? nextRole : 'customer' })
+        .eq('id', existing.auth_user_id);
+
+      await supabaseAdmin.auth.admin.updateUserById(String(existing.auth_user_id), {
+        ban_duration: nextActive ? 'none' : '876000h',
+        app_metadata: { role: nextRole },
+      });
+    }
+
+    res.json({ ok: true, active: nextActive, role: nextRole });
   });
 
   // Return JSON 404 for unknown API routes

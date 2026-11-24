@@ -97,9 +97,68 @@ function isAdminPath(): boolean {
   return pathname === '/admin' || pathname === '/app' || hash === 'admin';
 }
 
+const INQUIRY_DRAFT_KEY = 'tnp_inquiry_draft_v1';
+
+interface InquiryFormState {
+  name: string;
+  email: string;
+  phone: string;
+  service: string;
+  destination: string;
+  date: string;
+  details: string;
+}
+
+const EMPTY_INQUIRY_FORM: InquiryFormState = {
+  name: '',
+  email: '',
+  phone: '',
+  service: 'Air ticketing',
+  destination: '',
+  date: '',
+  details: '',
+};
+
+function hasInquiryDraftContent(form: InquiryFormState): boolean {
+  return Boolean(
+    form.name.trim() ||
+      form.email.trim() ||
+      form.phone.trim() ||
+      form.destination.trim() ||
+      form.date.trim() ||
+      form.details.trim(),
+  );
+}
+
+function loadInquiryDraft(): { form: InquiryFormState; open: boolean } {
+  if (typeof window === 'undefined') {
+    return { form: EMPTY_INQUIRY_FORM, open: false };
+  }
+  try {
+    const raw = window.localStorage.getItem(INQUIRY_DRAFT_KEY);
+    if (!raw) return { form: EMPTY_INQUIRY_FORM, open: false };
+    const parsed = JSON.parse(raw) as { form?: Partial<InquiryFormState>; open?: boolean };
+    const src = parsed?.form && typeof parsed.form === 'object' ? parsed.form : (parsed as Partial<InquiryFormState>);
+    const restored: InquiryFormState = {
+      name: typeof src.name === 'string' ? src.name : '',
+      email: typeof src.email === 'string' ? src.email : '',
+      phone: typeof src.phone === 'string' ? src.phone : '',
+      service: typeof src.service === 'string' && src.service ? src.service : 'Air ticketing',
+      destination: typeof src.destination === 'string' ? src.destination : '',
+      date: typeof src.date === 'string' ? src.date : '',
+      details: typeof src.details === 'string' ? src.details : '',
+    };
+    const shouldReopen = Boolean(parsed?.open && hasInquiryDraftContent(restored) && !isAdminPath());
+    return { form: restored, open: shouldReopen };
+  } catch {
+    return { form: EMPTY_INQUIRY_FORM, open: false };
+  }
+}
+
 export default function App() {
+  const [initialDraft] = useState(() => loadInquiryDraft());
   const [menu, setMenu] = useState(false);
-  const [booking, setBooking] = useState(false);
+  const [booking, setBooking] = useState(initialDraft.open);
   const [isAdminRoute, setIsAdminRoute] = useState<boolean>(() => isAdminPath());
 
   const [services, setServices] = useState<CatalogService[]>(DEFAULT_SERVICES);
@@ -109,15 +168,7 @@ export default function App() {
   const [msg, setMsg] = useState('');
   const [submittedWaLink, setSubmittedWaLink] = useState('');
   const [busy, setBusy] = useState(false);
-  const [f, setF] = useState({
-    name: '',
-    email: '',
-    phone: '',
-    service: 'Air ticketing',
-    destination: '',
-    date: '',
-    details: '',
-  });
+  const [f, setF] = useState<InquiryFormState>(initialDraft.form);
 
   // Admin auth state held exclusively in memory
   const [adminToken, setAdminToken] = useState<string | null>(null);
@@ -132,11 +183,48 @@ export default function App() {
   const [authError, setAuthError] = useState('');
   const [authBusy, setAuthBusy] = useState(false);
 
+  // Supabase Auth invitation / password-setup callback state
+  const [inviteMode, setInviteMode] = useState(false);
+  const [inviteType, setInviteType] = useState<'invite' | 'recovery'>('invite');
+  const [inviteEmail, setInviteEmail] = useState('');
+  const [inviteAccessToken, setInviteAccessToken] = useState('');
+  const [inviteRefreshToken, setInviteRefreshToken] = useState('');
+  const [inviteTokenHash, setInviteTokenHash] = useState('');
+  const [invitePass, setInvitePass] = useState('');
+  const [inviteConfirm, setInviteConfirm] = useState('');
+  const [showInvitePass, setShowInvitePass] = useState(false);
+  const [showInviteConfirm, setShowInviteConfirm] = useState(false);
+  const [inviteInitializing, setInviteInitializing] = useState(false);
+
   const wa = `https://wa.me/${phone}?text=${encodeURIComponent(
     'Hello TNP Travel Agency, I would like to make an inquiry.',
   )}`;
 
-  const setField = (k: string, v: string) => setF((p) => ({ ...p, [k]: v }));
+  const setField = (k: keyof InquiryFormState, v: string) => setF((p) => ({ ...p, [k]: v }));
+
+  useEffect(() => {
+    try {
+      if (hasInquiryDraftContent(f) || f.service !== (services[0]?.name || 'Air ticketing')) {
+        window.localStorage.setItem(INQUIRY_DRAFT_KEY, JSON.stringify({ form: f, open: booking }));
+      } else {
+        window.localStorage.removeItem(INQUIRY_DRAFT_KEY);
+      }
+    } catch {
+      // Ignore storage quota or private-mode errors
+    }
+  }, [f, booking, services]);
+
+  function clearInquiryDraft() {
+    const defaultService = services[0]?.name || 'Air ticketing';
+    setF({ ...EMPTY_INQUIRY_FORM, service: defaultService });
+    setMsg('');
+    setSubmittedWaLink('');
+    try {
+      window.localStorage.removeItem(INQUIRY_DRAFT_KEY);
+    } catch {
+      // Ignore storage errors
+    }
+  }
 
   const fetchCatalog = useCallback(async () => {
     try {
@@ -180,6 +268,161 @@ export default function App() {
   }, [fetchCatalog]);
 
   useEffect(() => {
+    let active = true;
+
+    async function processSupabaseAuthCallback() {
+      const searchParams = new URLSearchParams(window.location.search);
+      const rawHash = window.location.hash.replace(/^#/, '');
+      const hashParams =
+        rawHash && rawHash !== 'admin' && !rawHash.startsWith('/admin') && rawHash.includes('=')
+          ? new URLSearchParams(rawHash)
+          : new URLSearchParams();
+
+      const errorDesc =
+        hashParams.get('error_description') ||
+        searchParams.get('error_description') ||
+        hashParams.get('error') ||
+        searchParams.get('error');
+
+      const typeParam = hashParams.get('type') || searchParams.get('type') || '';
+      const accessToken = hashParams.get('access_token') || searchParams.get('access_token') || '';
+      const refreshToken = hashParams.get('refresh_token') || searchParams.get('refresh_token') || '';
+      const tokenHash = searchParams.get('token_hash') || hashParams.get('token_hash') || '';
+      const code = searchParams.get('code') || '';
+
+      if (errorDesc) {
+        window.history.replaceState({}, '', '/admin');
+        if (active) {
+          setIsAdminRoute(true);
+          setAuthError(errorDesc.replace(/\+/g, ' '));
+        }
+        return;
+      }
+
+      const hasCallback = Boolean(accessToken || tokenHash || code || typeParam === 'invite' || typeParam === 'recovery');
+      if (!hasCallback) return;
+
+      const isInviteOrRecovery =
+        typeParam === 'invite' || typeParam === 'recovery' || (!typeParam && Boolean(tokenHash || accessToken));
+
+      if (active) {
+        setIsAdminRoute(true);
+        setAuthError('');
+        if (isInviteOrRecovery) {
+          setInviteMode(true);
+          setInviteType(typeParam === 'recovery' ? 'recovery' : 'invite');
+          setInviteInitializing(true);
+        }
+        if (accessToken) setInviteAccessToken(accessToken);
+        if (refreshToken) setInviteRefreshToken(refreshToken);
+        if (tokenHash) setInviteTokenHash(tokenHash);
+      }
+
+      let resolvedAccess = accessToken;
+      let resolvedRefresh = refreshToken;
+      let resolvedEmail = '';
+
+      if (db) {
+        try {
+          if (accessToken && refreshToken) {
+            const { data, error } = await db.auth.setSession({
+              access_token: accessToken,
+              refresh_token: refreshToken,
+            });
+            if (!error && data.session) {
+              resolvedAccess = data.session.access_token;
+              resolvedRefresh = data.session.refresh_token;
+              resolvedEmail = data.user?.email || '';
+            }
+          } else if (tokenHash) {
+            const { data, error } = await db.auth.verifyOtp({
+              token_hash: tokenHash,
+              type: typeParam === 'recovery' ? 'recovery' : 'invite',
+            });
+            if (!error && data.session) {
+              resolvedAccess = data.session.access_token;
+              resolvedRefresh = data.session.refresh_token;
+              resolvedEmail = data.user?.email || '';
+            }
+          } else if (code) {
+            const { data, error } = await db.auth.exchangeCodeForSession(code);
+            if (!error && data.session) {
+              resolvedAccess = data.session.access_token;
+              resolvedRefresh = data.session.refresh_token;
+              resolvedEmail = data.user?.email || '';
+            }
+          } else {
+            const { data } = await db.auth.getSession();
+            if (data.session) {
+              resolvedAccess = data.session.access_token;
+              resolvedRefresh = data.session.refresh_token;
+              resolvedEmail = data.session.user?.email || '';
+            }
+          }
+        } catch {
+          // Backend accept-invite endpoint handles token fallback if needed
+        }
+      }
+
+      window.history.replaceState({}, '', '/admin');
+
+      if (!active) return;
+
+      if (resolvedAccess) setInviteAccessToken(resolvedAccess);
+      if (resolvedRefresh) setInviteRefreshToken(resolvedRefresh);
+      if (resolvedEmail) setInviteEmail(resolvedEmail);
+
+      // If this was a non-invite sign-in callback (e.g. magic link), go straight into dashboard
+      if (!isInviteOrRecovery && resolvedAccess) {
+        try {
+          const res = await fetch('/api/admin/supabase-session', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ access_token: resolvedAccess }),
+          });
+          const data = (await res.json()) as { token?: string; username?: string; error?: string };
+          if (res.ok && data.token && active) {
+            setAdminToken(data.token);
+            setAdminUsername(data.username || resolvedEmail);
+            setAdminConfigured(true);
+            setInviteMode(false);
+          } else if (active && data.error) {
+            setAuthError(data.error);
+          }
+        } catch {
+          if (active) setAuthError('Unable to verify Supabase session.');
+        }
+      }
+
+      if (active) {
+        setInviteInitializing(false);
+      }
+    }
+
+    processSupabaseAuthCallback();
+
+    const { data: authSub } = db
+      ? db.auth.onAuthStateChange((event, session) => {
+          if (!active) return;
+          if (event === 'PASSWORD_RECOVERY' && session) {
+            window.history.replaceState({}, '', '/admin');
+            setIsAdminRoute(true);
+            setInviteMode(true);
+            setInviteType('recovery');
+            setInviteAccessToken(session.access_token);
+            setInviteRefreshToken(session.refresh_token);
+            setInviteEmail(session.user?.email || '');
+          }
+        })
+      : { data: { subscription: null } };
+
+    return () => {
+      active = false;
+      authSub.subscription?.unsubscribe();
+    };
+  }, []);
+
+  useEffect(() => {
     const onLocationChange = () => {
       const pathname = window.location.pathname.replace(/\/+$/, '');
       if (pathname === '/app') {
@@ -198,7 +441,9 @@ export default function App() {
 
   useEffect(() => {
     if (isAdminRoute && !adminToken) {
-      setAuthError('');
+      if (!inviteMode) {
+        setAuthError('');
+      }
       setAuthPass('');
       setAuthConfirm('');
       setShowAuthPass(false);
@@ -206,7 +451,7 @@ export default function App() {
       setForceLoginMode(false);
       checkAdminStatus();
     }
-  }, [isAdminRoute, adminToken, checkAdminStatus]);
+  }, [isAdminRoute, adminToken, inviteMode, checkAdminStatus]);
 
   function navigateTo(targetPath: '/' | '/admin') {
     if (window.location.pathname !== targetPath) {
@@ -250,6 +495,80 @@ export default function App() {
       navigateTo('/admin');
     } catch (err: unknown) {
       setAuthError(err instanceof Error ? err.message : 'Unable to sign in.');
+    } finally {
+      setAuthBusy(false);
+    }
+  }
+
+  async function handleInvitePasswordSubmit(e: React.FormEvent) {
+    e.preventDefault();
+    setAuthError('');
+
+    if (invitePass.length < 5) {
+      setAuthError('Password must be at least 5 characters.');
+      return;
+    }
+    if (invitePass !== inviteConfirm) {
+      setAuthError('Passwords do not match.');
+      return;
+    }
+
+    setAuthBusy(true);
+    try {
+      let updatedViaBrowserClient = false;
+      let sessionAccessToken = inviteAccessToken;
+
+      if (db) {
+        const { data: sessData } = await db.auth.getSession();
+        if (sessData.session) {
+          const { data: updData, error: updErr } = await db.auth.updateUser({ password: invitePass });
+          if (updErr) {
+            throw new Error(updErr.message || 'Could not save password.');
+          }
+          const { data: refreshed } = await db.auth.getSession();
+          sessionAccessToken = refreshed.session?.access_token || sessData.session.access_token;
+          if (updData.user?.email) {
+            setInviteEmail(updData.user.email);
+          }
+          updatedViaBrowserClient = true;
+        }
+      }
+
+      const endpoint = updatedViaBrowserClient ? '/api/admin/supabase-session' : '/api/admin/accept-invite';
+      const payload = updatedViaBrowserClient
+        ? { access_token: sessionAccessToken, password_set: true }
+        : {
+            access_token: inviteAccessToken,
+            refresh_token: inviteRefreshToken,
+            token_hash: inviteTokenHash,
+            type: inviteType,
+            password: invitePass,
+          };
+
+      const res = await fetch(endpoint, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload),
+      });
+      const data = (await res.json()) as { token?: string; username?: string; error?: string };
+      if (!res.ok || !data.token) {
+        throw new Error(data.error || 'Could not complete account setup.');
+      }
+
+      setAdminToken(data.token);
+      setAdminUsername(data.username || inviteEmail);
+      setAdminConfigured(true);
+      setInviteMode(false);
+      setInvitePass('');
+      setInviteConfirm('');
+      setShowInvitePass(false);
+      setShowInviteConfirm(false);
+      setInviteAccessToken('');
+      setInviteRefreshToken('');
+      setInviteTokenHash('');
+      navigateTo('/admin');
+    } catch (err: unknown) {
+      setAuthError(err instanceof Error ? err.message : 'Unable to save password.');
     } finally {
       setAuthBusy(false);
     }
@@ -319,14 +638,14 @@ export default function App() {
       setSubmittedWaLink(`https://wa.me/${phone}?text=${encodeURIComponent(body)}`);
       setMsg(`Inquiry received${refText}. Our team will contact you shortly.`);
       setF({
-        name: '',
-        email: '',
-        phone: '',
+        ...EMPTY_INQUIRY_FORM,
         service: services[0]?.name || 'Air ticketing',
-        destination: '',
-        date: '',
-        details: '',
       });
+      try {
+        window.localStorage.removeItem(INQUIRY_DRAFT_KEY);
+      } catch {
+        // Ignore storage errors
+      }
     } catch (err: unknown) {
       setMsg(err instanceof Error ? err.message : 'Could not submit. Please contact us on WhatsApp.');
     } finally {
@@ -344,6 +663,103 @@ export default function App() {
           onLogout={handleAdminLogout}
           onCatalogUpdated={fetchCatalog}
         />
+      );
+    }
+
+    if (inviteMode) {
+      return (
+        <div className="admin-auth-page">
+          <div className="modal modal-narrow">
+            <button
+              type="button"
+              className="close"
+              onClick={() => {
+                setInviteMode(false);
+                navigateTo('/');
+              }}
+              aria-label="Back to website"
+            >
+              <X />
+            </button>
+            <small className="eyebrow">
+              <Lock size={14} /> {inviteType === 'recovery' ? 'PASSWORD RESET' : 'INVITATION ACCEPTED'}
+            </small>
+            <h2>
+              Set your <i>password.</i>
+            </h2>
+            <p>
+              {inviteType === 'recovery'
+                ? 'Choose a new administrator password to continue to the TNP Admin Dashboard.'
+                : 'Your invitation is verified. Create a password to store your credentials and enter the TNP Admin Dashboard.'}
+            </p>
+            {inviteEmail && <div className="notice">Account: <strong>{inviteEmail}</strong></div>}
+
+            {inviteInitializing ? (
+              <div className="admin-empty">Verifying your invitation link…</div>
+            ) : (
+              <form onSubmit={handleInvitePasswordSubmit}>
+                <label>
+                  New password
+                  <div className="password-field">
+                    <input
+                      required
+                      minLength={5}
+                      type={showInvitePass ? 'text' : 'password'}
+                      autoComplete="new-password"
+                      placeholder="Minimum 5 characters"
+                      value={invitePass}
+                      onChange={(e) => setInvitePass(e.target.value)}
+                    />
+                    <button
+                      type="button"
+                      className="password-toggle"
+                      onClick={() => setShowInvitePass((v) => !v)}
+                      aria-label={showInvitePass ? 'Hide password' : 'Show password'}
+                    >
+                      {showInvitePass ? <EyeOff size={18} /> : <Eye size={18} />}
+                    </button>
+                  </div>
+                </label>
+                <label>
+                  Confirm password
+                  <div className="password-field">
+                    <input
+                      required
+                      minLength={5}
+                      type={showInviteConfirm ? 'text' : 'password'}
+                      autoComplete="new-password"
+                      placeholder="Re-enter your password"
+                      value={inviteConfirm}
+                      onChange={(e) => setInviteConfirm(e.target.value)}
+                    />
+                    <button
+                      type="button"
+                      className="password-toggle"
+                      onClick={() => setShowInviteConfirm((v) => !v)}
+                      aria-label={showInviteConfirm ? 'Hide password' : 'Show password'}
+                    >
+                      {showInviteConfirm ? <EyeOff size={18} /> : <Eye size={18} />}
+                    </button>
+                  </div>
+                </label>
+                {authError && <div className="notice-error">{authError}</div>}
+                <button className="primary wide" disabled={authBusy}>
+                  {authBusy ? 'Saving password…' : 'Save password & open dashboard'} <ArrowRight />
+                </button>
+                <button
+                  type="button"
+                  className="auth-mode-switch"
+                  onClick={() => {
+                    setAuthError('');
+                    setInviteMode(false);
+                  }}
+                >
+                  Already have a password? Sign in
+                </button>
+              </form>
+            )}
+          </div>
+        </div>
       );
     }
 
@@ -824,6 +1240,15 @@ export default function App() {
               <button className="primary wide" disabled={busy}>
                 {busy ? 'Submitting…' : 'Submit inquiry'} <ArrowRight />
               </button>
+              {hasInquiryDraftContent(f) && (
+                <button
+                  type="button"
+                  className="auth-mode-switch"
+                  onClick={clearInquiryDraft}
+                >
+                  Clear saved draft
+                </button>
+              )}
               {msg && (
                 <div className="notice">
                   <div>{msg}</div>

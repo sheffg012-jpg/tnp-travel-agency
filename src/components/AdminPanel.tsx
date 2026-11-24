@@ -18,6 +18,8 @@ import {
   Share2,
   Shield,
   Trash2,
+  UserPlus,
+  Users,
   X,
 } from 'lucide-react';
 
@@ -59,6 +61,22 @@ export interface SocialLinkItem {
   label: string;
   url: string;
   active: boolean;
+}
+
+export interface AdminUserItem {
+  id: string;
+  auth_user_id: string | null;
+  email: string;
+  full_name: string;
+  role: 'admin' | 'super_admin';
+  active: boolean;
+  auth_provider: string;
+  auth_status: 'invited' | 'active' | 'disabled';
+  has_password: boolean;
+  invited_at: string | null;
+  confirmed_at: string | null;
+  last_sign_in_at: string | null;
+  created_at: string;
 }
 
 interface AdminStats {
@@ -123,12 +141,13 @@ export default function AdminPanel({
   onLogout,
   onCatalogUpdated,
 }: AdminPanelProps) {
-  const [tab, setTab] = useState<'bookings' | 'services' | 'destinations' | 'social'>('bookings');
+  const [tab, setTab] = useState<'bookings' | 'services' | 'destinations' | 'social' | 'users'>('bookings');
   const [bookings, setBookings] = useState<BookingItem[]>([]);
   const [stats, setStats] = useState<AdminStats>({ total: 0, pending: 0, inProgress: 0, confirmed: 0 });
   const [services, setServices] = useState<ServiceItem[]>([]);
   const [destinations, setDestinations] = useState<DestinationItem[]>([]);
   const [socialLinks, setSocialLinks] = useState<SocialLinkItem[]>([]);
+  const [adminUsers, setAdminUsers] = useState<AdminUserItem[]>([]);
   const [storageMode, setStorageMode] = useState<string>('');
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
@@ -149,6 +168,15 @@ export default function AdminPanel({
   const [newSocialPlatform, setNewSocialPlatform] = useState('Instagram');
   const [newSocialLabel, setNewSocialLabel] = useState('');
   const [newSocialUrl, setNewSocialUrl] = useState('');
+
+  const [userActionMode, setUserActionMode] = useState<'invite' | 'create'>('invite');
+  const [newAdminEmail, setNewAdminEmail] = useState('');
+  const [newAdminName, setNewAdminName] = useState('');
+  const [newAdminRole, setNewAdminRole] = useState<'admin' | 'super_admin'>('admin');
+  const [newAdminPass, setNewAdminPass] = useState('');
+  const [showNewAdminPass, setShowNewAdminPass] = useState(false);
+  const [userMsg, setUserMsg] = useState('');
+  const [userBusy, setUserBusy] = useState(false);
 
   const [passwordModal, setPasswordModal] = useState(false);
   const [currentPw, setCurrentPw] = useState('');
@@ -173,14 +201,15 @@ export default function AdminPanel({
     setLoading(true);
     setError('');
     try {
-      const [bRes, sRes, dRes, socRes] = await Promise.all([
+      const [bRes, sRes, dRes, socRes, usrRes] = await Promise.all([
         fetch('/api/admin/bookings', { headers: { Authorization: `Bearer ${token}` } }),
         fetch('/api/admin/services', { headers: { Authorization: `Bearer ${token}` } }),
         fetch('/api/admin/destinations', { headers: { Authorization: `Bearer ${token}` } }),
         fetch('/api/admin/social-links', { headers: { Authorization: `Bearer ${token}` } }),
+        fetch('/api/admin/users', { headers: { Authorization: `Bearer ${token}` } }),
       ]);
 
-      if (bRes.status === 401 || sRes.status === 401 || dRes.status === 401 || socRes.status === 401) {
+      if (bRes.status === 401 || sRes.status === 401 || dRes.status === 401 || socRes.status === 401 || usrRes.status === 401) {
         onLogout();
         return;
       }
@@ -197,6 +226,7 @@ export default function AdminPanel({
       const sData = (await sRes.json()) as { services: ServiceItem[] };
       const dData = (await dRes.json()) as { destinations: DestinationItem[] };
       const socData = (await socRes.json()) as { socialLinks: SocialLinkItem[] };
+      const usrData = usrRes.ok ? ((await usrRes.json()) as { users?: AdminUserItem[] }) : { users: [] };
 
       setBookings(bData.bookings);
       setStats(bData.stats);
@@ -204,6 +234,7 @@ export default function AdminPanel({
       setServices(sData.services);
       setDestinations(dData.destinations);
       setSocialLinks(socData.socialLinks);
+      setAdminUsers(Array.isArray(usrData.users) ? usrData.users : []);
     } catch (err: unknown) {
       setError(err instanceof Error ? err.message : 'Unable to fetch dashboard data.');
     } finally {
@@ -402,6 +433,63 @@ export default function AdminPanel({
     }
   }
 
+  async function addOrInviteAdminUser(e: React.FormEvent) {
+    e.preventDefault();
+    if (!newAdminEmail.trim()) return;
+    setError('');
+    setUserMsg('');
+    setUserBusy(true);
+
+    try {
+      const res = await fetch('/api/admin/users/invite', {
+        method: 'POST',
+        headers: authHeaders(),
+        body: JSON.stringify({
+          mode: userActionMode,
+          email: newAdminEmail.trim(),
+          full_name: newAdminName.trim(),
+          role: newAdminRole,
+          password: userActionMode === 'create' ? newAdminPass : undefined,
+          redirectTo: `${window.location.origin}/admin`,
+        }),
+      });
+      const data = (await res.json()) as { error?: string; email?: string; mode?: string };
+      if (!res.ok) throw new Error(data.error || 'Could not process admin user request.');
+
+      setUserMsg(
+        data.mode === 'create'
+          ? `Admin account created and synced for ${data.email}.`
+          : `Invitation sent to ${data.email}. Accepting the invite will direct them to /admin to set their password.`,
+      );
+      setNewAdminEmail('');
+      setNewAdminName('');
+      setNewAdminPass('');
+      setShowNewAdminPass(false);
+      await loadData();
+    } catch (err: unknown) {
+      setError(err instanceof Error ? err.message : 'Could not add admin user.');
+    } finally {
+      setUserBusy(false);
+    }
+  }
+
+  async function toggleAdminUserActive(user: AdminUserItem) {
+    setError('');
+    setUserMsg('');
+    try {
+      const res = await fetch(`/api/admin/users/${user.id}`, {
+        method: 'PATCH',
+        headers: authHeaders(),
+        body: JSON.stringify({ active: !user.active }),
+      });
+      const data = (await res.json()) as { error?: string };
+      if (!res.ok) throw new Error(data.error || 'Could not update admin user.');
+      await loadData();
+    } catch (err: unknown) {
+      setError(err instanceof Error ? err.message : 'Could not update admin user.');
+    }
+  }
+
   function openPasswordModal() {
     setCurrentPw('');
     setNewPw('');
@@ -543,6 +631,13 @@ export default function AdminPanel({
             onClick={() => setTab('social')}
           >
             <Share2 size={16} /> Social Media ({socialLinks.length})
+          </button>
+          <button
+            type="button"
+            className={tab === 'users' ? 'active' : ''}
+            onClick={() => setTab('users')}
+          >
+            <Users size={16} /> Admin Users ({adminUsers.length})
           </button>
         </div>
 
@@ -824,6 +919,131 @@ export default function AdminPanel({
                         <Trash2 size={15} />
                       </button>
                     </div>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+        )}
+
+        {tab === 'users' && (
+          <div className="admin-panel-card">
+            <div className="admin-toolbar">
+              <div className="admin-user-mode">
+                <button
+                  type="button"
+                  className={userActionMode === 'invite' ? 'toggle-btn active' : 'toggle-btn'}
+                  onClick={() => {
+                    setUserActionMode('invite');
+                    setUserMsg('');
+                  }}
+                >
+                  <Mail size={14} /> Invite by Email
+                </button>
+                <button
+                  type="button"
+                  className={userActionMode === 'create' ? 'toggle-btn active' : 'toggle-btn'}
+                  onClick={() => {
+                    setUserActionMode('create');
+                    setUserMsg('');
+                  }}
+                >
+                  <UserPlus size={14} /> Create with Password
+                </button>
+              </div>
+              <span className="muted">
+                Users created or invited in Supabase Authentication also sync here automatically.
+              </span>
+            </div>
+
+            <form className="admin-inline-form" onSubmit={addOrInviteAdminUser}>
+              <input
+                type="email"
+                required
+                placeholder="Admin email (e.g. staff@tnptravel.com)"
+                value={newAdminEmail}
+                onChange={(e) => setNewAdminEmail(e.target.value)}
+              />
+              <input
+                type="text"
+                placeholder="Full name (optional)"
+                value={newAdminName}
+                onChange={(e) => setNewAdminName(e.target.value)}
+              />
+              <select
+                className="admin-select"
+                value={newAdminRole}
+                onChange={(e) => setNewAdminRole(e.target.value as 'admin' | 'super_admin')}
+              >
+                <option value="admin">Admin</option>
+                <option value="super_admin">Super Admin</option>
+              </select>
+              {userActionMode === 'create' && (
+                <div className="password-field admin-inline-pw">
+                  <input
+                    required
+                    minLength={5}
+                    type={showNewAdminPass ? 'text' : 'password'}
+                    placeholder="Initial password (min 5 chars)"
+                    value={newAdminPass}
+                    onChange={(e) => setNewAdminPass(e.target.value)}
+                  />
+                  <button
+                    type="button"
+                    className="password-toggle"
+                    onClick={() => setShowNewAdminPass((v) => !v)}
+                    aria-label={showNewAdminPass ? 'Hide password' : 'Show password'}
+                  >
+                    {showNewAdminPass ? <EyeOff size={16} /> : <Eye size={16} />}
+                  </button>
+                </div>
+              )}
+              <button type="submit" className="primary" disabled={userBusy}>
+                <UserPlus size={16} />{' '}
+                {userBusy
+                  ? 'Saving…'
+                  : userActionMode === 'create'
+                    ? 'Create admin'
+                    : 'Send invite'}
+              </button>
+            </form>
+
+            {userMsg && <div className="notice" style={{ marginBottom: 16 }}>{userMsg}</div>}
+
+            {adminUsers.length === 0 ? (
+              <div className="admin-empty">
+                No synced admin accounts found yet. Run migration 004 in Supabase SQL Editor and click Refresh to sync Supabase Auth users.
+              </div>
+            ) : (
+              <div className="catalog-grid">
+                {adminUsers.map((u) => (
+                  <div key={u.id} className={`catalog-card ${u.active ? '' : 'inactive'}`}>
+                    <div className="social-card-info">
+                      <strong>{u.email}</strong>
+                      {u.full_name && <span className="muted">{u.full_name}</span>}
+                      <span className="muted">
+                        Role: {u.role === 'super_admin' ? 'Super Admin' : 'Admin'} · Provider: {u.auth_provider}
+                      </span>
+                      <span className="muted">
+                        Status:{' '}
+                        <span className={`status-badge status-${u.auth_status === 'active' ? 'confirmed' : u.auth_status === 'invited' ? 'pending' : 'cancelled'}`}>
+                          {formatStatusLabel(u.auth_status)}
+                        </span>{' '}
+                        · {u.has_password ? 'Password stored' : 'Awaiting password setup'}
+                      </span>
+                      {u.last_sign_in_at && (
+                        <small className="muted">
+                          Last sign in: {new Date(u.last_sign_in_at).toLocaleString()}
+                        </small>
+                      )}
+                    </div>
+                    <button
+                      type="button"
+                      className={u.active ? 'toggle-btn active' : 'toggle-btn'}
+                      onClick={() => toggleAdminUserActive(u)}
+                    >
+                      <CheckCircle2 size={15} /> {u.active ? 'Active' : 'Disabled'}
+                    </button>
                   </div>
                 ))}
               </div>
