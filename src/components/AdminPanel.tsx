@@ -7,6 +7,7 @@ import {
   Eye,
   EyeOff,
   Globe2,
+  Image as ImageIcon,
   KeyRound,
   Link2,
   LogOut,
@@ -20,10 +21,12 @@ import {
   Share2,
   Shield,
   Trash2,
+  Upload,
   UserPlus,
   Users,
   X,
 } from 'lucide-react';
+import SocialPlatformIcon, { detectSocialPlatform } from './SocialPlatformIcon';
 
 export interface BookingItem {
   id: string;
@@ -63,6 +66,20 @@ export interface SocialLinkItem {
   label: string;
   url: string;
   active: boolean;
+}
+
+export type PicturePlacement = 'gallery' | 'hero' | 'feature' | 'about';
+
+export interface SitePictureItem {
+  id: string;
+  title: string;
+  caption: string;
+  placement: PicturePlacement;
+  image_url: string;
+  active: boolean;
+  sort_order?: number;
+  created_at?: string;
+  updated_at?: string;
 }
 
 export interface AdminUserItem {
@@ -116,6 +133,8 @@ const SOCIAL_PLATFORMS = [
   'YouTube',
   'LinkedIn',
   'WhatsApp Channel',
+  'Telegram',
+  'Threads',
   'Website',
 ];
 
@@ -136,6 +155,84 @@ function isSafeHttpUrl(url: string): boolean {
   }
 }
 
+const PICTURE_PLACEMENT_LABELS: Record<PicturePlacement, string> = {
+  gallery: 'Gallery Showcase',
+  hero: 'Hero Main Banner',
+  feature: 'Flight Support Banner',
+  about: 'About Section Image',
+};
+
+function isSafeImageSrc(src: string): boolean {
+  if (!src) return false;
+  if (src.startsWith('data:image/')) {
+    return /^data:image\/(?:jpeg|jpg|png|webp|gif);base64,/i.test(src);
+  }
+  if (src.startsWith('/')) {
+    return !src.startsWith('//') && !src.includes('..');
+  }
+  return isSafeHttpUrl(src);
+}
+
+async function prepareImageUpload(file: File): Promise<string> {
+  const allowedTypes = ['image/jpeg', 'image/png', 'image/webp', 'image/gif'];
+  if (!allowedTypes.includes(file.type)) {
+    throw new Error('Please choose a JPG, PNG, WebP, or GIF image.');
+  }
+  if (file.size > 12 * 1024 * 1024) {
+    throw new Error('Image file is too large (max 12 MB).');
+  }
+
+  const rawDataUrl = await new Promise<string>((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => (typeof reader.result === 'string' ? resolve(reader.result) : reject(new Error('Could not read file.')));
+    reader.onerror = () => reject(new Error('Could not read file.'));
+    reader.readAsDataURL(file);
+  });
+
+  if (file.type === 'image/gif') {
+    if (file.size > 2.5 * 1024 * 1024) {
+      throw new Error('GIF image must be under 2.5 MB.');
+    }
+    return rawDataUrl;
+  }
+
+  if (file.size <= 650 * 1024) {
+    return rawDataUrl;
+  }
+
+  // Compress large photos client-side so mobile uploads stay fast and under serverless limits
+  return new Promise<string>((resolve) => {
+    const img = new Image();
+    img.onload = () => {
+      const maxDim = 1600;
+      let width = img.width;
+      let height = img.height;
+      if (width > maxDim || height > maxDim) {
+        if (width >= height) {
+          height = Math.round((height * maxDim) / width);
+          width = maxDim;
+        } else {
+          width = Math.round((width * maxDim) / height);
+          height = maxDim;
+        }
+      }
+      const canvas = document.createElement('canvas');
+      canvas.width = Math.max(1, width);
+      canvas.height = Math.max(1, height);
+      const ctx = canvas.getContext('2d');
+      if (!ctx) {
+        resolve(rawDataUrl);
+        return;
+      }
+      ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
+      const outputType = file.type === 'image/png' ? 'image/webp' : 'image/jpeg';
+      resolve(canvas.toDataURL(outputType, 0.85));
+    };
+    img.onerror = () => resolve(rawDataUrl);
+    img.src = rawDataUrl;
+  });
+}
+
 export default function AdminPanel({
   token,
   username,
@@ -143,12 +240,19 @@ export default function AdminPanel({
   onLogout,
   onCatalogUpdated,
 }: AdminPanelProps) {
-  const [tab, setTab] = useState<'bookings' | 'services' | 'destinations' | 'social' | 'users'>('bookings');
+  const [tab, setTab] = useState<'bookings' | 'services' | 'destinations' | 'pictures' | 'social' | 'contact' | 'users'>('bookings');
   const [bookings, setBookings] = useState<BookingItem[]>([]);
   const [stats, setStats] = useState<AdminStats>({ total: 0, pending: 0, inProgress: 0, confirmed: 0 });
   const [services, setServices] = useState<ServiceItem[]>([]);
   const [destinations, setDestinations] = useState<DestinationItem[]>([]);
   const [socialLinks, setSocialLinks] = useState<SocialLinkItem[]>([]);
+  const [pictures, setPictures] = useState<SitePictureItem[]>([]);
+  const [picturesTableReady, setPicturesTableReady] = useState(true);
+  const [contactEmail, setContactEmail] = useState('');
+  const [whatsappNumber, setWhatsappNumber] = useState('');
+  const [settingsTableReady, setSettingsTableReady] = useState(true);
+  const [savingSettings, setSavingSettings] = useState(false);
+  const [settingsNotice, setSettingsNotice] = useState('');
   const [adminUsers, setAdminUsers] = useState<AdminUserItem[]>([]);
   const [storageMode, setStorageMode] = useState<string>('');
   const [loading, setLoading] = useState(true);
@@ -170,6 +274,29 @@ export default function AdminPanel({
   const [newSocialPlatform, setNewSocialPlatform] = useState('Instagram');
   const [newSocialLabel, setNewSocialLabel] = useState('');
   const [newSocialUrl, setNewSocialUrl] = useState('');
+  const [editingSocial, setEditingSocial] = useState<SocialLinkItem | null>(null);
+  const [editSocialPlatform, setEditSocialPlatform] = useState('Instagram');
+  const [editSocialLabel, setEditSocialLabel] = useState('');
+  const [editSocialUrl, setEditSocialUrl] = useState('');
+  const [savingSocial, setSavingSocial] = useState(false);
+
+  const [newPicTitle, setNewPicTitle] = useState('');
+  const [newPicCaption, setNewPicCaption] = useState('');
+  const [newPicPlacement, setNewPicPlacement] = useState<PicturePlacement>('gallery');
+  const [newPicUrl, setNewPicUrl] = useState('');
+  const [newPicDataUrl, setNewPicDataUrl] = useState('');
+  const [newPicFileName, setNewPicFileName] = useState('');
+  const [uploadingPic, setUploadingPic] = useState(false);
+  const [picNotice, setPicNotice] = useState('');
+
+  const [editingPicture, setEditingPicture] = useState<SitePictureItem | null>(null);
+  const [editPicTitle, setEditPicTitle] = useState('');
+  const [editPicCaption, setEditPicCaption] = useState('');
+  const [editPicPlacement, setEditPicPlacement] = useState<PicturePlacement>('gallery');
+  const [editPicUrl, setEditPicUrl] = useState('');
+  const [editPicDataUrl, setEditPicDataUrl] = useState('');
+  const [editPicFileName, setEditPicFileName] = useState('');
+  const [savingPic, setSavingPic] = useState(false);
 
   const [userActionMode, setUserActionMode] = useState<'invite' | 'link' | 'create'>('invite');
   const [newAdminEmail, setNewAdminEmail] = useState('');
@@ -205,15 +332,25 @@ export default function AdminPanel({
     setLoading(true);
     setError('');
     try {
-      const [bRes, sRes, dRes, socRes, usrRes] = await Promise.all([
+      const [bRes, sRes, dRes, socRes, picRes, setRes, usrRes] = await Promise.all([
         fetch('/api/admin/bookings', { headers: { Authorization: `Bearer ${token}` } }),
         fetch('/api/admin/services', { headers: { Authorization: `Bearer ${token}` } }),
         fetch('/api/admin/destinations', { headers: { Authorization: `Bearer ${token}` } }),
         fetch('/api/admin/social-links', { headers: { Authorization: `Bearer ${token}` } }),
+        fetch('/api/admin/pictures', { headers: { Authorization: `Bearer ${token}` } }),
+        fetch('/api/admin/settings', { headers: { Authorization: `Bearer ${token}` } }),
         fetch('/api/admin/users', { headers: { Authorization: `Bearer ${token}` } }),
       ]);
 
-      if (bRes.status === 401 || sRes.status === 401 || dRes.status === 401 || socRes.status === 401 || usrRes.status === 401) {
+      if (
+        bRes.status === 401 ||
+        sRes.status === 401 ||
+        dRes.status === 401 ||
+        socRes.status === 401 ||
+        picRes.status === 401 ||
+        setRes.status === 401 ||
+        usrRes.status === 401
+      ) {
         onLogout('Your admin session expired or could not be verified. Please sign in again.');
         return;
       }
@@ -230,6 +367,15 @@ export default function AdminPanel({
       const sData = (await sRes.json()) as { services: ServiceItem[] };
       const dData = (await dRes.json()) as { destinations: DestinationItem[] };
       const socData = (await socRes.json()) as { socialLinks: SocialLinkItem[] };
+      const picData = picRes.ok
+        ? ((await picRes.json()) as { pictures?: SitePictureItem[]; tableReady?: boolean })
+        : { pictures: [], tableReady: true };
+      const setData = setRes.ok
+        ? ((await setRes.json()) as {
+            settings?: { contact_email?: string; whatsapp_number?: string };
+            tableReady?: boolean;
+          })
+        : { settings: undefined, tableReady: true };
       const usrData = usrRes.ok ? ((await usrRes.json()) as { users?: AdminUserItem[] }) : { users: [] };
 
       setBookings(bData.bookings);
@@ -238,6 +384,13 @@ export default function AdminPanel({
       setServices(sData.services);
       setDestinations(dData.destinations);
       setSocialLinks(socData.socialLinks);
+      setPictures(Array.isArray(picData.pictures) ? picData.pictures : []);
+      setPicturesTableReady(picData.tableReady !== false);
+      if (setData.settings) {
+        setContactEmail(setData.settings.contact_email || '');
+        setWhatsappNumber(setData.settings.whatsapp_number || '');
+      }
+      setSettingsTableReady(setData.tableReady !== false);
       setAdminUsers(Array.isArray(usrData.users) ? usrData.users : []);
     } catch (err: unknown) {
       setError(err instanceof Error ? err.message : 'Unable to fetch dashboard data.');
@@ -422,6 +575,44 @@ export default function AdminPanel({
     }
   }
 
+  function openSocialEditor(link: SocialLinkItem) {
+    setEditingSocial(link);
+    setEditSocialPlatform(link.platform || 'Website');
+    setEditSocialLabel(link.label || '');
+    setEditSocialUrl(link.url || '');
+  }
+
+  async function saveSocialEdit(e: React.FormEvent) {
+    e.preventDefault();
+    if (!editingSocial) return;
+    setSavingSocial(true);
+    setError('');
+    try {
+      const res = await fetch(`/api/admin/social-links/${editingSocial.id}`, {
+        method: 'PATCH',
+        headers: authHeaders(),
+        body: JSON.stringify({
+          platform: editSocialPlatform,
+          label: editSocialLabel.trim() || editSocialPlatform,
+          url: editSocialUrl.trim(),
+        }),
+      });
+      if (res.status === 401) {
+        onLogout('Your admin session expired or could not be verified. Please sign in again.');
+        return;
+      }
+      const data = (await res.json()) as { error?: string };
+      if (!res.ok) throw new Error(data.error || 'Could not update social media link.');
+      setEditingSocial(null);
+      await loadData();
+      onCatalogUpdated();
+    } catch (err: unknown) {
+      setError(err instanceof Error ? err.message : 'Could not update social media link.');
+    } finally {
+      setSavingSocial(false);
+    }
+  }
+
   async function deleteSocialLink(id: string) {
     setError('');
     try {
@@ -430,10 +621,229 @@ export default function AdminPanel({
         headers: { Authorization: `Bearer ${token}` },
       });
       if (!res.ok) throw new Error('Could not delete social media link.');
+      if (editingSocial?.id === id) setEditingSocial(null);
       await loadData();
       onCatalogUpdated();
     } catch (err: unknown) {
       setError(err instanceof Error ? err.message : 'Could not delete social media link.');
+    }
+  }
+
+  async function handleNewPictureFile(e: React.ChangeEvent<HTMLInputElement>) {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    setError('');
+    setPicNotice('');
+    try {
+      const dataUrl = await prepareImageUpload(file);
+      setNewPicDataUrl(dataUrl);
+      setNewPicFileName(file.name);
+      if (!newPicTitle.trim()) {
+        setNewPicTitle(file.name.replace(/\.[^.]+$/, '').replace(/[-_]+/g, ' ').slice(0, 80));
+      }
+    } catch (err: unknown) {
+      setError(err instanceof Error ? err.message : 'Could not process image file.');
+    } finally {
+      e.target.value = '';
+    }
+  }
+
+  async function addPicture(e: React.FormEvent) {
+    e.preventDefault();
+    if (!newPicTitle.trim()) {
+      setError('Picture title is required.');
+      return;
+    }
+    if (!newPicDataUrl && !newPicUrl.trim()) {
+      setError('Please upload an image file or enter an image URL.');
+      return;
+    }
+    setUploadingPic(true);
+    setError('');
+    setPicNotice('');
+    try {
+      const res = await fetch('/api/admin/pictures', {
+        method: 'POST',
+        headers: authHeaders(),
+        body: JSON.stringify({
+          title: newPicTitle.trim(),
+          caption: newPicCaption.trim(),
+          placement: newPicPlacement,
+          imageDataUrl: newPicDataUrl || undefined,
+          image_url: !newPicDataUrl ? newPicUrl.trim() : undefined,
+        }),
+      });
+      if (res.status === 401) {
+        onLogout('Your admin session expired or could not be verified. Please sign in again.');
+        return;
+      }
+      const data = (await res.json()) as { error?: string };
+      if (!res.ok) throw new Error(data.error || 'Could not upload picture.');
+      setNewPicTitle('');
+      setNewPicCaption('');
+      setNewPicUrl('');
+      setNewPicDataUrl('');
+      setNewPicFileName('');
+      setPicNotice('Picture uploaded and published to the public site.');
+      await loadData();
+      onCatalogUpdated();
+    } catch (err: unknown) {
+      setError(err instanceof Error ? err.message : 'Could not upload picture.');
+    } finally {
+      setUploadingPic(false);
+    }
+  }
+
+  function openPictureEditor(pic: SitePictureItem) {
+    setEditingPicture(pic);
+    setEditPicTitle(pic.title);
+    setEditPicCaption(pic.caption || '');
+    setEditPicPlacement(pic.placement || 'gallery');
+    setEditPicUrl(pic.image_url || '');
+    setEditPicDataUrl('');
+    setEditPicFileName('');
+  }
+
+  async function handleEditPictureFile(e: React.ChangeEvent<HTMLInputElement>) {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    setError('');
+    try {
+      const dataUrl = await prepareImageUpload(file);
+      setEditPicDataUrl(dataUrl);
+      setEditPicFileName(file.name);
+    } catch (err: unknown) {
+      setError(err instanceof Error ? err.message : 'Could not process image file.');
+    } finally {
+      e.target.value = '';
+    }
+  }
+
+  async function savePictureEdit(e: React.FormEvent) {
+    e.preventDefault();
+    if (!editingPicture) return;
+    setSavingPic(true);
+    setError('');
+    setPicNotice('');
+    try {
+      const res = await fetch(`/api/admin/pictures/${editingPicture.id}`, {
+        method: 'PATCH',
+        headers: authHeaders(),
+        body: JSON.stringify({
+          title: editPicTitle.trim(),
+          caption: editPicCaption.trim(),
+          placement: editPicPlacement,
+          imageDataUrl: editPicDataUrl || undefined,
+          image_url: !editPicDataUrl && editPicUrl.trim() !== editingPicture.image_url ? editPicUrl.trim() : undefined,
+        }),
+      });
+      if (res.status === 401) {
+        onLogout('Your admin session expired or could not be verified. Please sign in again.');
+        return;
+      }
+      const data = (await res.json()) as { error?: string };
+      if (!res.ok) throw new Error(data.error || 'Could not update picture.');
+      setEditingPicture(null);
+      setPicNotice('Picture updated on the public site.');
+      await loadData();
+      onCatalogUpdated();
+    } catch (err: unknown) {
+      setError(err instanceof Error ? err.message : 'Could not update picture.');
+    } finally {
+      setSavingPic(false);
+    }
+  }
+
+  async function togglePictureActive(pic: SitePictureItem) {
+    setError('');
+    setPicNotice('');
+    try {
+      const res = await fetch(`/api/admin/pictures/${pic.id}`, {
+        method: 'PATCH',
+        headers: authHeaders(),
+        body: JSON.stringify({ active: !pic.active }),
+      });
+      if (res.status === 401) {
+        onLogout('Your admin session expired or could not be verified. Please sign in again.');
+        return;
+      }
+      if (!res.ok) throw new Error('Could not update picture visibility.');
+      await loadData();
+      onCatalogUpdated();
+    } catch (err: unknown) {
+      setError(err instanceof Error ? err.message : 'Could not update picture visibility.');
+    }
+  }
+
+  async function deletePicture(id: string) {
+    setError('');
+    setPicNotice('');
+    try {
+      const res = await fetch(`/api/admin/pictures/${id}`, {
+        method: 'DELETE',
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      if (res.status === 401) {
+        onLogout('Your admin session expired or could not be verified. Please sign in again.');
+        return;
+      }
+      if (!res.ok) throw new Error('Could not delete picture.');
+      if (editingPicture?.id === id) setEditingPicture(null);
+      await loadData();
+      onCatalogUpdated();
+    } catch (err: unknown) {
+      setError(err instanceof Error ? err.message : 'Could not delete picture.');
+    }
+  }
+
+  async function saveContactSettings(e: React.FormEvent) {
+    e.preventDefault();
+    const trimmedEmail = contactEmail.trim().toLowerCase();
+    const cleanedWhatsapp = sanitizeDigits(whatsappNumber);
+
+    if (!trimmedEmail || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(trimmedEmail)) {
+      setError('Please enter a valid public contact email address.');
+      return;
+    }
+    if (whatsappNumber.trim() && (cleanedWhatsapp.length < 7 || cleanedWhatsapp.length > 20)) {
+      setError('WhatsApp number must contain 7 to 20 digits with country code.');
+      return;
+    }
+
+    setSavingSettings(true);
+    setError('');
+    setSettingsNotice('');
+    try {
+      const res = await fetch('/api/admin/settings', {
+        method: 'PATCH',
+        headers: authHeaders(),
+        body: JSON.stringify({
+          contact_email: trimmedEmail,
+          whatsapp_number: cleanedWhatsapp,
+        }),
+      });
+      if (res.status === 401) {
+        onLogout('Your admin session expired or could not be verified. Please sign in again.');
+        return;
+      }
+      const data = (await res.json()) as {
+        settings?: { contact_email?: string; whatsapp_number?: string };
+        tableReady?: boolean;
+        error?: string;
+      };
+      if (!res.ok) throw new Error(data.error || 'Could not update contact information.');
+
+      if (data.settings) {
+        setContactEmail(data.settings.contact_email || trimmedEmail);
+        setWhatsappNumber(data.settings.whatsapp_number || cleanedWhatsapp);
+      }
+      setSettingsTableReady(data.tableReady !== false);
+      setSettingsNotice('Public contact email & WhatsApp info updated on the website.');
+      onCatalogUpdated();
+    } catch (err: unknown) {
+      setError(err instanceof Error ? err.message : 'Could not update contact information.');
+    } finally {
+      setSavingSettings(false);
     }
   }
 
@@ -665,10 +1075,24 @@ export default function AdminPanel({
           </button>
           <button
             type="button"
+            className={tab === 'pictures' ? 'active' : ''}
+            onClick={() => setTab('pictures')}
+          >
+            <ImageIcon size={16} /> Pictures ({pictures.length})
+          </button>
+          <button
+            type="button"
             className={tab === 'social' ? 'active' : ''}
             onClick={() => setTab('social')}
           >
             <Share2 size={16} /> Social Media ({socialLinks.length})
+          </button>
+          <button
+            type="button"
+            className={tab === 'contact' ? 'active' : ''}
+            onClick={() => setTab('contact')}
+          >
+            <Mail size={16} /> Contact &amp; Email
           </button>
           <button
             type="button"
@@ -924,43 +1348,273 @@ export default function AdminPanel({
               </div>
             ) : (
               <div className="catalog-grid">
-                {socialLinks.map((link) => (
-                  <div key={link.id} className={`catalog-card ${link.active ? '' : 'inactive'}`}>
-                    <div className="social-card-info">
-                      <strong>{link.platform}</strong>
-                      <span className="muted">{link.label}</span>
-                      {isSafeHttpUrl(link.url) && (
-                        <a
-                          href={link.url}
-                          target="_blank"
-                          rel="noopener noreferrer"
-                          className="social-source-link"
+                {socialLinks.map((link) => {
+                  const brandKey = detectSocialPlatform(link.platform, link.url);
+                  return (
+                    <div key={link.id} className={`catalog-card ${link.active ? '' : 'inactive'}`}>
+                      <div className="social-card-info">
+                        <div className="social-card-head">
+                          <span className={`social-admin-badge social-brand-${brandKey}`}>
+                            <SocialPlatformIcon platform={link.platform} url={link.url} size={17} />
+                          </span>
+                          <div>
+                            <strong>{link.platform}</strong>
+                            <span className="muted">{link.label}</span>
+                          </div>
+                        </div>
+                        {isSafeHttpUrl(link.url) && (
+                          <a
+                            href={link.url}
+                            target="_blank"
+                            rel="noopener noreferrer"
+                            className="social-source-link"
+                          >
+                            {link.url} <ExternalLink size={12} />
+                          </a>
+                        )}
+                      </div>
+                      <div className="row-actions">
+                        <button
+                          type="button"
+                          className="icon-btn"
+                          title="Edit social link"
+                          onClick={() => openSocialEditor(link)}
                         >
-                          {link.url} <ExternalLink size={12} />
-                        </a>
-                      )}
+                          <Pencil size={15} />
+                        </button>
+                        <button
+                          type="button"
+                          className={link.active ? 'toggle-btn active' : 'toggle-btn'}
+                          onClick={() => toggleSocialLink(link)}
+                        >
+                          <CheckCircle2 size={15} /> {link.active ? 'Active' : 'Hidden'}
+                        </button>
+                        <button
+                          type="button"
+                          className="icon-btn danger"
+                          title="Delete social link"
+                          onClick={() => deleteSocialLink(link.id)}
+                        >
+                          <Trash2 size={15} />
+                        </button>
+                      </div>
                     </div>
-                    <div className="row-actions">
+                  );
+                })}
+              </div>
+            )}
+          </div>
+        )}
+
+        {tab === 'pictures' && (
+          <div className="admin-panel-card">
+            {!picturesTableReady && (
+              <div className="notice-error" style={{ marginTop: 0, marginBottom: 16 }}>
+                Supabase table <strong>site_pictures</strong> is not initialized yet. Run migration{' '}
+                <code>006_site_pictures.sql</code> in Supabase SQL Editor so uploaded images persist across deployments.
+              </div>
+            )}
+
+            <form className="admin-picture-form" onSubmit={addPicture}>
+              <div className="admin-picture-fields">
+                <input
+                  type="text"
+                  required
+                  placeholder="Picture title (e.g. Dubai Holiday Package)"
+                  value={newPicTitle}
+                  onChange={(e) => setNewPicTitle(e.target.value)}
+                />
+                <select
+                  className="admin-select"
+                  value={newPicPlacement}
+                  onChange={(e) => setNewPicPlacement(e.target.value as PicturePlacement)}
+                >
+                  <option value="gallery">Gallery Showcase</option>
+                  <option value="hero">Hero Main Banner</option>
+                  <option value="feature">Flight Support Banner</option>
+                  <option value="about">About Section Image</option>
+                </select>
+                <input
+                  type="text"
+                  placeholder="Caption or short description (optional)"
+                  value={newPicCaption}
+                  onChange={(e) => setNewPicCaption(e.target.value)}
+                />
+              </div>
+
+              <div className="admin-picture-upload-row">
+                <label className="admin-file-picker">
+                  <Upload size={16} />
+                  <span>{newPicFileName ? `Selected: ${newPicFileName}` : 'Upload image from device'}</span>
+                  <input
+                    type="file"
+                    accept="image/jpeg,image/png,image/webp,image/gif"
+                    onChange={handleNewPictureFile}
+                  />
+                </label>
+
+                <input
+                  type="text"
+                  placeholder="Or paste image URL (https://...)"
+                  value={newPicUrl}
+                  onChange={(e) => {
+                    setNewPicUrl(e.target.value);
+                    if (e.target.value.trim()) {
+                      setNewPicDataUrl('');
+                      setNewPicFileName('');
+                    }
+                  }}
+                />
+
+                {(newPicDataUrl || isSafeImageSrc(newPicUrl.trim())) && (
+                  <div className="admin-upload-preview">
+                    <img
+                      src={newPicDataUrl || newPicUrl.trim()}
+                      alt="Upload preview"
+                    />
+                    {newPicDataUrl && (
                       <button
                         type="button"
-                        className={link.active ? 'toggle-btn active' : 'toggle-btn'}
-                        onClick={() => toggleSocialLink(link)}
+                        className="icon-btn"
+                        title="Clear selected file"
+                        onClick={() => {
+                          setNewPicDataUrl('');
+                          setNewPicFileName('');
+                        }}
                       >
-                        <CheckCircle2 size={15} /> {link.active ? 'Active' : 'Hidden'}
+                        <X size={14} />
                       </button>
-                      <button
-                        type="button"
-                        className="icon-btn danger"
-                        title="Delete social link"
-                        onClick={() => deleteSocialLink(link.id)}
-                      >
-                        <Trash2 size={15} />
-                      </button>
+                    )}
+                  </div>
+                )}
+
+                <button type="submit" className="primary" disabled={uploadingPic}>
+                  <Upload size={16} /> {uploadingPic ? 'Uploading…' : 'Upload picture'}
+                </button>
+              </div>
+            </form>
+
+            {picNotice && <div className="notice" style={{ marginBottom: 16 }}>{picNotice}</div>}
+
+            {pictures.length === 0 ? (
+              <div className="admin-empty">
+                No pictures uploaded yet. Upload an image above to showcase it on the public website.
+              </div>
+            ) : (
+              <div className="picture-admin-grid">
+                {pictures.map((pic) => (
+                  <div key={pic.id} className={`picture-admin-card ${pic.active ? '' : 'inactive'}`}>
+                    <div className="picture-admin-thumb">
+                      {isSafeImageSrc(pic.image_url) && (
+                        <img src={pic.image_url} alt={pic.title} />
+                      )}
+                      <span className="picture-placement-tag">
+                        {PICTURE_PLACEMENT_LABELS[pic.placement] || 'Gallery'}
+                      </span>
+                    </div>
+                    <div className="picture-admin-body">
+                      <strong>{pic.title}</strong>
+                      {pic.caption && <p>{pic.caption}</p>}
+                      <div className="row-actions">
+                        <button
+                          type="button"
+                          className="icon-btn"
+                          title="Edit or replace picture"
+                          onClick={() => openPictureEditor(pic)}
+                        >
+                          <Pencil size={15} />
+                        </button>
+                        <button
+                          type="button"
+                          className={pic.active ? 'toggle-btn active' : 'toggle-btn'}
+                          onClick={() => togglePictureActive(pic)}
+                        >
+                          <CheckCircle2 size={15} /> {pic.active ? 'Active' : 'Hidden'}
+                        </button>
+                        <button
+                          type="button"
+                          className="icon-btn danger"
+                          title="Delete picture"
+                          onClick={() => deletePicture(pic.id)}
+                        >
+                          <Trash2 size={15} />
+                        </button>
+                      </div>
                     </div>
                   </div>
                 ))}
               </div>
             )}
+          </div>
+        )}
+
+        {tab === 'contact' && (
+          <div className="admin-panel-card">
+            {!settingsTableReady && (
+              <div className="notice-error" style={{ marginTop: 0, marginBottom: 16 }}>
+                Supabase table <strong>site_settings</strong> is not initialized yet. Run migration{' '}
+                <code>007_site_settings.sql</code> in Supabase SQL Editor so contact updates persist across deployments.
+              </div>
+            )}
+
+            <form className="admin-settings-form" onSubmit={saveContactSettings}>
+              <div className="admin-settings-grid">
+                <label className="admin-settings-field">
+                  <span>Public Contact Email</span>
+                  <input
+                    type="email"
+                    required
+                    placeholder="e.g. agencytnptravel@gmail.com"
+                    value={contactEmail}
+                    onChange={(e) => {
+                      setContactEmail(e.target.value);
+                      if (settingsNotice) setSettingsNotice('');
+                    }}
+                  />
+                  <small className="muted">
+                    Displayed in the Contact section of the public website and used for mailto links.
+                  </small>
+                </label>
+
+                <label className="admin-settings-field">
+                  <span>WhatsApp Number (with country code)</span>
+                  <input
+                    type="tel"
+                    placeholder="e.g. 250788697728"
+                    value={whatsappNumber}
+                    onChange={(e) => {
+                      setWhatsappNumber(e.target.value);
+                      if (settingsNotice) setSettingsNotice('');
+                    }}
+                  />
+                  <small className="muted">
+                    Digits only with country code (no + or spaces). Used for WhatsApp chat buttons.
+                  </small>
+                </label>
+              </div>
+
+              <div className="admin-settings-actions">
+                <button type="submit" className="primary" disabled={savingSettings}>
+                  <Mail size={16} /> {savingSettings ? 'Saving…' : 'Save contact info'}
+                </button>
+              </div>
+            </form>
+
+            {settingsNotice && <div className="notice" style={{ marginBottom: 16 }}>{settingsNotice}</div>}
+
+            <div className="admin-settings-preview">
+              <small className="eyebrow">LIVE PUBLIC CONTACT PREVIEW</small>
+              <div className="admin-settings-preview-row">
+                <div>
+                  <span className="muted">Email address</span>
+                  <strong>{contactEmail || 'Not set'}</strong>
+                </div>
+                <div>
+                  <span className="muted">WhatsApp link</span>
+                  <strong>{whatsappNumber ? `+${sanitizeDigits(whatsappNumber)}` : 'Not set'}</strong>
+                </div>
+              </div>
+            </div>
           </div>
         )}
 
@@ -1198,6 +1852,143 @@ export default function AdminPanel({
               </label>
               <button type="submit" className="primary wide" disabled={saving}>
                 {saving ? 'Saving…' : 'Save changes'}
+              </button>
+            </form>
+          </div>
+        </div>
+      )}
+
+      {editingSocial && (
+        <div className="overlay" onClick={() => setEditingSocial(null)}>
+          <div className="modal modal-narrow" onClick={(e) => e.stopPropagation()}>
+            <button type="button" className="close" onClick={() => setEditingSocial(null)}>
+              <X />
+            </button>
+            <small className="eyebrow">SOCIAL MEDIA</small>
+            <h2>
+              Update <i>social link.</i>
+            </h2>
+            <p>Changes update the social icon shown on the public website.</p>
+            <form onSubmit={saveSocialEdit}>
+              <label>
+                Platform
+                <select
+                  value={editSocialPlatform}
+                  onChange={(e) => setEditSocialPlatform(e.target.value)}
+                >
+                  {SOCIAL_PLATFORMS.map((p) => (
+                    <option key={p} value={p}>
+                      {p}
+                    </option>
+                  ))}
+                  {!SOCIAL_PLATFORMS.includes(editSocialPlatform) && (
+                    <option value={editSocialPlatform}>{editSocialPlatform}</option>
+                  )}
+                </select>
+              </label>
+              <label>
+                Display handle or label
+                <input
+                  type="text"
+                  placeholder="e.g. @tnptravel"
+                  value={editSocialLabel}
+                  onChange={(e) => setEditSocialLabel(e.target.value)}
+                />
+              </label>
+              <label>
+                Full URL
+                <input
+                  required
+                  type="url"
+                  placeholder="https://x.com/tnptravel"
+                  value={editSocialUrl}
+                  onChange={(e) => setEditSocialUrl(e.target.value)}
+                />
+              </label>
+              <button type="submit" className="primary wide" disabled={savingSocial}>
+                {savingSocial ? 'Saving…' : 'Save social link'}
+              </button>
+            </form>
+          </div>
+        </div>
+      )}
+
+      {editingPicture && (
+        <div className="overlay" onClick={() => setEditingPicture(null)}>
+          <div className="modal modal-narrow" onClick={(e) => e.stopPropagation()}>
+            <button type="button" className="close" onClick={() => setEditingPicture(null)}>
+              <X />
+            </button>
+            <small className="eyebrow">SITE PICTURES</small>
+            <h2>
+              Update <i>picture.</i>
+            </h2>
+            <p>Update details or upload a new image to display on the public website.</p>
+            <form onSubmit={savePictureEdit}>
+              {(editPicDataUrl || isSafeImageSrc(editPicUrl.trim())) && (
+                <div className="picture-modal-preview">
+                  <img src={editPicDataUrl || editPicUrl.trim()} alt={editPicTitle || 'Picture preview'} />
+                </div>
+              )}
+              <label>
+                Title
+                <input
+                  required
+                  type="text"
+                  value={editPicTitle}
+                  onChange={(e) => setEditPicTitle(e.target.value)}
+                />
+              </label>
+              <label>
+                Display section
+                <select
+                  value={editPicPlacement}
+                  onChange={(e) => setEditPicPlacement(e.target.value as PicturePlacement)}
+                >
+                  <option value="gallery">Gallery Showcase</option>
+                  <option value="hero">Hero Main Banner</option>
+                  <option value="feature">Flight Support Banner</option>
+                  <option value="about">About Section Image</option>
+                </select>
+              </label>
+              <label>
+                Caption
+                <input
+                  type="text"
+                  placeholder="Short description (optional)"
+                  value={editPicCaption}
+                  onChange={(e) => setEditPicCaption(e.target.value)}
+                />
+              </label>
+              <label>
+                Upload replacement image
+                <div className="admin-file-picker modal-file-picker">
+                  <Upload size={16} />
+                  <span>{editPicFileName ? `New file: ${editPicFileName}` : 'Choose a new JPG, PNG, WebP, or GIF'}</span>
+                  <input
+                    type="file"
+                    accept="image/jpeg,image/png,image/webp,image/gif"
+                    onChange={handleEditPictureFile}
+                  />
+                </div>
+              </label>
+              <label>
+                Or image URL
+                <input
+                  type="text"
+                  placeholder="https://... or /tnp-main-poster.jpg"
+                  value={editPicUrl}
+                  onChange={(e) => {
+                    setEditPicUrl(e.target.value);
+                    if (e.target.value.trim()) {
+                      setEditPicDataUrl('');
+                      setEditPicFileName('');
+                    }
+                  }}
+                />
+              </label>
+              <button type="submit" className="primary wide" disabled={savingPic}>
+                {savingPic ? 'Saving…' : 'Save picture'}
               </button>
             </form>
           </div>

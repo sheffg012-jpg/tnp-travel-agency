@@ -4,7 +4,7 @@ import {
   ArrowRight,
   Car,
   CheckCircle2,
-  ExternalLink,
+  ChevronDown,
   Eye,
   EyeOff,
   Globe2,
@@ -16,14 +16,21 @@ import {
   MessageCircle,
   Plane,
   Send,
-  Share2,
   ShieldCheck,
   User,
   Wallet,
   X,
   type LucideProps,
 } from 'lucide-react';
-import AdminPanel, { type SocialLinkItem } from './components/AdminPanel';
+import AdminPanel, { type SitePictureItem, type SocialLinkItem } from './components/AdminPanel';
+import SocialPlatformIcon, { detectSocialPlatform } from './components/SocialPlatformIcon';
+import {
+  SUPPORTED_LANGUAGES,
+  TRANSLATIONS,
+  getInitialLanguage,
+  persistLanguage,
+  type LanguageCode,
+} from './i18n';
 
 function normalizeSupabaseUrl(raw?: string): string {
   if (!raw) return '';
@@ -33,8 +40,8 @@ function normalizeSupabaseUrl(raw?: string): string {
 const url = normalizeSupabaseUrl(import.meta.env.VITE_SUPABASE_URL);
 const key = (import.meta.env.VITE_SUPABASE_ANON_KEY || '').trim();
 const db = url && key ? createClient(url, key) : null;
-const phone = import.meta.env.VITE_WHATSAPP_NUMBER || '250788697728';
-const email = import.meta.env.VITE_CONTACT_EMAIL || 'agencytnptravel@gmail.com';
+const DEFAULT_WHATSAPP_NUMBER = import.meta.env.VITE_WHATSAPP_NUMBER || '250788697728';
+const DEFAULT_CONTACT_EMAIL = import.meta.env.VITE_CONTACT_EMAIL || 'agencytnptravel@gmail.com';
 
 const ICON_MAP: Record<string, React.ComponentType<LucideProps>> = {
   Plane,
@@ -81,6 +88,57 @@ const DEFAULT_DESTINATIONS: CatalogDestination[] = [
   { id: 'dst-8', name: 'United States' },
 ];
 
+const DEFAULT_PICTURES: SitePictureItem[] = [
+  {
+    id: 'pic-hero-default',
+    title: 'Explore the World with TNP',
+    caption: 'Main hero banner showcased on the home page.',
+    placement: 'hero',
+    image_url: '/tnp-main-poster.jpg',
+    active: true,
+  },
+  {
+    id: 'pic-feature-default',
+    title: 'Flight & Travel Support',
+    caption: 'Featured banner for air ticketing and travel assistance.',
+    placement: 'feature',
+    image_url: '/tnp-air-ticketing.jpg',
+    active: true,
+  },
+  {
+    id: 'pic-about-default',
+    title: 'TNP Travel Agency Brand',
+    caption: 'Official logo & visual displayed in the About section.',
+    placement: 'about',
+    image_url: '/tnp-logo.jpg',
+    active: true,
+  },
+  {
+    id: 'pic-gallery-1',
+    title: 'Complete Travel Services',
+    caption: 'Flights, visas, hotel reservations, and end-to-end trip planning.',
+    placement: 'gallery',
+    image_url: '/tnp-services.jpg',
+    active: true,
+  },
+  {
+    id: 'pic-gallery-2',
+    title: 'Global Travel Campaigns',
+    caption: 'Tailored international holiday, study, and business travel support.',
+    placement: 'gallery',
+    image_url: '/tnp-social-campaigns.jpg',
+    active: true,
+  },
+  {
+    id: 'pic-gallery-3',
+    title: 'Air Ticketing & Reservations',
+    caption: 'Responsive ticketing desk connecting you to destinations worldwide.',
+    placement: 'gallery',
+    image_url: '/tnp-air-ticketing.jpg',
+    active: true,
+  },
+];
+
 function isSafeHttpUrl(rawUrl: string): boolean {
   try {
     const parsed = new URL(rawUrl);
@@ -88,6 +146,14 @@ function isSafeHttpUrl(rawUrl: string): boolean {
   } catch {
     return false;
   }
+}
+
+function isSafeImageSrc(rawUrl: string): boolean {
+  if (!rawUrl) return false;
+  if (rawUrl.startsWith('/')) {
+    return !rawUrl.startsWith('//') && !rawUrl.includes('..');
+  }
+  return isSafeHttpUrl(rawUrl);
 }
 
 function isAdminPath(): boolean {
@@ -174,9 +240,23 @@ export default function App() {
   const [booking, setBooking] = useState(initialDraft.open);
   const [isAdminRoute, setIsAdminRoute] = useState<boolean>(() => isAdminPath());
 
+  const [lang, setLang] = useState<LanguageCode>(() => getInitialLanguage());
+  const t = TRANSLATIONS[lang] || TRANSLATIONS.en;
+  const activeLangMeta = SUPPORTED_LANGUAGES.find((item) => item.code === lang) || SUPPORTED_LANGUAGES[0];
+
   const [services, setServices] = useState<CatalogService[]>(DEFAULT_SERVICES);
   const [destinations, setDestinations] = useState<CatalogDestination[]>(DEFAULT_DESTINATIONS);
   const [socialLinks, setSocialLinks] = useState<SocialLinkItem[]>([]);
+  const [pictures, setPictures] = useState<SitePictureItem[]>(DEFAULT_PICTURES);
+  const [contactEmail, setContactEmail] = useState<string>(DEFAULT_CONTACT_EMAIL);
+  const [whatsappNumber, setWhatsappNumber] = useState<string>(DEFAULT_WHATSAPP_NUMBER);
+  const [lightboxPicture, setLightboxPicture] = useState<SitePictureItem | null>(null);
+
+  useEffect(() => {
+    persistLanguage(lang);
+    document.documentElement.lang = lang;
+    document.documentElement.dir = isAdminRoute ? 'ltr' : activeLangMeta.dir;
+  }, [lang, activeLangMeta.dir, isAdminRoute]);
 
   const [msg, setMsg] = useState('');
   const [submittedWaLink, setSubmittedWaLink] = useState('');
@@ -209,7 +289,7 @@ export default function App() {
   const [showInviteConfirm, setShowInviteConfirm] = useState(false);
   const [inviteInitializing, setInviteInitializing] = useState(false);
 
-  const wa = `https://wa.me/${phone}?text=${encodeURIComponent(
+  const wa = `https://wa.me/${whatsappNumber}?text=${encodeURIComponent(
     'Hello TNP Travel Agency, I would like to make an inquiry.',
   )}`;
 
@@ -247,6 +327,8 @@ export default function App() {
         services?: CatalogService[];
         destinations?: CatalogDestination[];
         socialLinks?: SocialLinkItem[];
+        pictures?: SitePictureItem[];
+        settings?: { contact_email?: string; whatsapp_number?: string };
       };
       if (Array.isArray(data.services) && data.services.length > 0) {
         setServices(data.services);
@@ -256,6 +338,18 @@ export default function App() {
       }
       if (Array.isArray(data.socialLinks)) {
         setSocialLinks(data.socialLinks.filter((l) => isSafeHttpUrl(l.url)));
+      }
+      if (Array.isArray(data.pictures)) {
+        setPictures(data.pictures.filter((p) => isSafeImageSrc(p.image_url)));
+      }
+      if (data.settings?.contact_email && /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(data.settings.contact_email.trim())) {
+        setContactEmail(data.settings.contact_email.trim());
+      }
+      if (data.settings?.whatsapp_number) {
+        const cleanDigits = data.settings.whatsapp_number.replace(/\D/g, '');
+        if (cleanDigits.length >= 7) {
+          setWhatsappNumber(cleanDigits);
+        }
       }
     } catch {
       // Keep default catalog if server is restarting
@@ -652,8 +746,8 @@ export default function App() {
 
       const refText = data.booking?.reference ? ` (Ref: ${data.booking.reference})` : '';
       const body = `TNP booking inquiry${refText}\nName: ${f.name}\nEmail: ${f.email}\nPhone: ${f.phone}\nService: ${f.service}\nDestination: ${f.destination}\nDate: ${f.date}\nDetails: ${f.details}`;
-      setSubmittedWaLink(`https://wa.me/${phone}?text=${encodeURIComponent(body)}`);
-      setMsg(`Inquiry received${refText}. Our team will contact you shortly.`);
+      setSubmittedWaLink(`https://wa.me/${whatsappNumber}?text=${encodeURIComponent(body)}`);
+      setMsg(`${t.bookingModal.receivedPrefix}${refText}. ${t.bookingModal.receivedSuffix}`);
       setF({
         ...EMPTY_INQUIRY_FORM,
         service: services[0]?.name || 'Air ticketing',
@@ -664,7 +758,7 @@ export default function App() {
         // Ignore storage errors
       }
     } catch (err: unknown) {
-      setMsg(err instanceof Error ? err.message : 'Could not submit. Please contact us on WhatsApp.');
+      setMsg(err instanceof Error ? err.message : t.bookingModal.errorFallback);
     } finally {
       setBusy(false);
     }
@@ -899,88 +993,114 @@ export default function App() {
     );
   }
 
+  const heroPic = pictures.find((p) => p.placement === 'hero');
+  const featurePic = pictures.find((p) => p.placement === 'feature');
+  const aboutPic = pictures.find((p) => p.placement === 'about');
+  const galleryPics = pictures.filter((p) => p.placement === 'gallery');
+
   return (
     <>
       <header>
         <a className="brand" href="#home">
           <img src="/tnp-logo.jpg" alt="TNP Travel Agency logo" />
           <span>
-            TNP <b>TRAVEL AGENCY</b>
+            TNP <b>{t.brandTagline}</b>
           </span>
         </a>
-        <button className="hamb" onClick={() => setMenu(!menu)} aria-label="Toggle menu">
-          {menu ? <X /> : <Menu />}
-        </button>
-        <nav className={menu ? 'nav show' : 'nav'}>
-          {[
-            ['Home', '#home'],
-            ['Services', '#services'],
-            ['Destinations', '#destinations'],
-            ['About', '#about'],
-            ['Contact', '#contact'],
-          ].map(([n, h]) => (
-            <a key={h} href={h} onClick={() => setMenu(false)}>
-              {n}
-            </a>
-          ))}
-          <button
-            className="pill"
-            onClick={() => {
-              setMenu(false);
-              setBooking(true);
-            }}
-          >
-            Book now <ArrowRight size={16} />
+        <div className="header-right">
+          <nav className={menu ? 'nav show' : 'nav'}>
+            {[
+              [t.nav.home, '#home'],
+              [t.nav.services, '#services'],
+              [t.nav.destinations, '#destinations'],
+              [t.nav.gallery, '#gallery'],
+              [t.nav.about, '#about'],
+              [t.nav.contact, '#contact'],
+            ].map(([n, h]) => (
+              <a key={h} href={h} onClick={() => setMenu(false)}>
+                {n}
+              </a>
+            ))}
+            <button
+              className="pill"
+              onClick={() => {
+                setMenu(false);
+                setBooking(true);
+              }}
+            >
+              {t.nav.bookNow} <ArrowRight size={16} />
+            </button>
+          </nav>
+
+          <label className="lang-picker" title={t.languageLabel}>
+            <Globe2 size={15} aria-hidden="true" />
+            <span className="lang-picker-code">{activeLangMeta.shortCode}</span>
+            <select
+              aria-label={t.languageLabel}
+              value={lang}
+              onChange={(e) => setLang(e.target.value as LanguageCode)}
+            >
+              {SUPPORTED_LANGUAGES.map((item) => (
+                <option key={item.code} value={item.code}>
+                  {item.nativeName === item.name ? item.nativeName : `${item.nativeName} (${item.name})`}
+                </option>
+              ))}
+            </select>
+            <ChevronDown size={14} aria-hidden="true" />
+          </label>
+
+          <button className="hamb" onClick={() => setMenu(!menu)} aria-label="Toggle menu">
+            {menu ? <X /> : <Menu />}
           </button>
-        </nav>
+        </div>
       </header>
 
       <main>
         <section className="hero" id="home">
           <div className="intro">
             <small className="eyebrow">
-              <Globe2 size={15} /> YOUR JOURNEY STARTS HERE
+              <Globe2 size={15} /> {t.hero.eyebrow}
             </small>
             <h1>
-              Explore the World
+              {t.hero.titleLine1}
               <br />
-              <i>with TNP.</i>
+              <i>{t.hero.titleAccent}</i>
             </h1>
-            <p>
-              Flights, visa assistance, hotels, car rentals and unforgettable tours — travel planning
-              made easier with personal support.
-            </p>
+            <p>{t.hero.subtitle}</p>
             <div className="actions">
               <button className="primary" onClick={() => setBooking(true)}>
-                Plan your trip <ArrowRight />
+                {t.hero.planTrip} <ArrowRight />
               </button>
               <a className="outline" href={wa} target="_blank" rel="noreferrer">
-                <MessageCircle /> Chat with us
+                <MessageCircle /> {t.hero.chatWithUs}
               </a>
             </div>
             <div className="proof">
               <span>
-                <CheckCircle2 /> Personal assistance
+                <CheckCircle2 /> {t.hero.proof1}
               </span>
               <span>
-                <CheckCircle2 /> Worldwide destinations
+                <CheckCircle2 /> {t.hero.proof2}
               </span>
             </div>
           </div>
           <div className="hero-img">
-            <img src="/tnp-main-poster.jpg" alt="TNP travel agency promotional poster" />
+            <img
+              src={heroPic?.image_url || '/tnp-main-poster.jpg'}
+              alt={heroPic?.title || 'TNP travel agency promotional poster'}
+            />
             <div className="float">
               <Plane />
               <span>
-                <b>Ready for take-off?</b>
-                <small>Let&apos;s plan your next adventure.</small>
+                <b>{t.hero.floatTitle}</b>
+                <small>{t.hero.floatSubtitle}</small>
               </span>
             </div>
           </div>
         </section>
 
         <div className="airline">
-          <span>TRAVEL WITH CONFIDENCE</span>
+          <span>{t.airlineStrip}</span>
           <b>RwandAir</b>
           <b>Qatar Airways</b>
           <b>Emirates</b>
@@ -992,36 +1112,34 @@ export default function App() {
         <section className="section" id="services">
           <div className="section-title">
             <div>
-              <small className="eyebrow">WHAT WE DO</small>
+              <small className="eyebrow">{t.services.eyebrow}</small>
               <h2>
-                Everything you need
+                {t.services.titleLine1}
                 <br />
-                to <i>travel better.</i>
+                <i>{t.services.titleAccent}</i>
               </h2>
             </div>
-            <p>
-              One trusted partner for the details that make every journey smoother. Tell us what you
-              need and our team will help with the next step.
-            </p>
+            <p>{t.services.subtitle}</p>
           </div>
           <div className="cards">
             {services.map((svc, i) => {
               const Icon = ICON_MAP[svc.icon] || Globe2;
+              const translatedSvc = t.services.items[svc.name];
               return (
                 <article key={svc.id} className="service">
                   <div className="ico">
                     <Icon />
                   </div>
                   <small>{String(i + 1).padStart(2, '0')}</small>
-                  <h3>{svc.name}</h3>
-                  <p>{svc.description}</p>
+                  <h3>{translatedSvc?.name || svc.name}</h3>
+                  <p>{translatedSvc?.description || svc.description}</p>
                   <button
                     onClick={() => {
                       setField('service', svc.name);
                       setBooking(true);
                     }}
                   >
-                    Make an inquiry <ArrowRight size={15} />
+                    {t.services.inquireCta} <ArrowRight size={15} />
                   </button>
                 </article>
               );
@@ -1031,110 +1149,146 @@ export default function App() {
 
         <section className="dest" id="destinations">
           <div>
-            <small className="eyebrow">GO FURTHER</small>
+            <small className="eyebrow">{t.destinations.eyebrow}</small>
             <h2>
-              Where will life
+              {t.destinations.titleLine1}
               <br />
-              take you <i>next?</i>
+              <i>{t.destinations.titleAccent}</i>
             </h2>
-            <p>
-              Explore international study, work and travel opportunities. Our team can help you
-              understand the process and prepare your next steps.
-            </p>
+            <p>{t.destinations.subtitle}</p>
             <button className="primary" onClick={() => setBooking(true)}>
-              Explore destinations <ArrowRight />
+              {t.destinations.exploreCta} <ArrowRight />
             </button>
           </div>
           <div className="countries">
-            {destinations.map((dst, i) => (
-              <button
-                key={dst.id}
-                onClick={() => {
-                  setField('destination', dst.name);
-                  setBooking(true);
-                }}
-              >
-                <small>{String(i + 1).padStart(2, '0')}</small>
-                {dst.name}
-                <ArrowRight />
-              </button>
-            ))}
+            {destinations.map((dst, i) => {
+              const dstLabel = t.destinations.names[dst.name] || dst.name;
+              return (
+                <button
+                  key={dst.id}
+                  onClick={() => {
+                    setField('destination', dstLabel);
+                    setBooking(true);
+                  }}
+                >
+                  <small>{String(i + 1).padStart(2, '0')}</small>
+                  {dstLabel}
+                  <ArrowRight />
+                </button>
+              );
+            })}
           </div>
         </section>
 
         <section className="feature">
-          <img src="/tnp-air-ticketing.jpg" alt="TNP Air Ticketing" />
+          <img
+            src={featurePic?.image_url || '/tnp-air-ticketing.jpg'}
+            alt={featurePic?.title || 'TNP Air Ticketing'}
+          />
           <div>
-            <small className="eyebrow">FLIGHT &amp; TRAVEL SUPPORT</small>
+            <small className="eyebrow">{t.feature.eyebrow}</small>
             <h2>
-              Your world.
+              {t.feature.titleLine1}
               <br />
-              <i>One booking away.</i>
+              <i>{t.feature.titleAccent}</i>
             </h2>
+            <p>{t.feature.subtitle}</p>
             <p>
-              Need a flight, hotel, visa guidance or a complete holiday plan? Share your travel
-              details and let TNP help coordinate your request.
+              <CheckCircle2 /> {t.feature.bullet1}
             </p>
             <p>
-              <CheckCircle2 /> Clear booking updates and next steps
-            </p>
-            <p>
-              <CheckCircle2 /> Multiple travel services in one place
+              <CheckCircle2 /> {t.feature.bullet2}
             </p>
             <button className="primary" onClick={() => setBooking(true)}>
-              Start a booking <ArrowRight />
+              {t.feature.cta} <ArrowRight />
             </button>
           </div>
         </section>
 
         <section className="about" id="about">
-          <img src="/tnp-logo.jpg" alt="TNP Travel Agency" />
+          <img
+            src={aboutPic?.image_url || '/tnp-logo.jpg'}
+            alt={aboutPic?.title || 'TNP Travel Agency'}
+          />
           <div>
-            <small className="eyebrow">ABOUT TNP</small>
+            <small className="eyebrow">{t.about.eyebrow}</small>
             <h2>
-              Your trusted
+              {t.about.titleLine1}
               <br />
-              <i>travel partner.</i>
+              <i>{t.about.titleAccent}</i>
             </h2>
+            <p>{t.about.subtitle}</p>
             <p>
-              TNP Travel Agency helps individuals, families and businesses plan travel with
-              confidence. We bring travel services together with responsive, personal support.
-            </p>
-            <p>
-              <CheckCircle2 /> Helpful guidance &nbsp; <CheckCircle2 /> Service built around you
+              <CheckCircle2 /> {t.about.badge1} &nbsp; <CheckCircle2 /> {t.about.badge2}
             </p>
           </div>
         </section>
 
+        {galleryPics.length > 0 && (
+          <section className="section gallery-section" id="gallery">
+            <div className="section-title">
+              <div>
+                <small className="eyebrow">{t.gallery.eyebrow}</small>
+                <h2>
+                  {t.gallery.titleLine1} <i>{t.gallery.titleAccent}</i>
+                </h2>
+              </div>
+              <p>{t.gallery.subtitle}</p>
+            </div>
+            <div className="gallery-grid">
+              {galleryPics.map((pic) => (
+                <button
+                  key={pic.id}
+                  type="button"
+                  className="gallery-card"
+                  onClick={() => setLightboxPicture(pic)}
+                >
+                  <div className="gallery-media">
+                    <img src={pic.image_url} alt={pic.title} loading="lazy" />
+                  </div>
+                  <div className="gallery-meta">
+                    <h3>{pic.title}</h3>
+                    {pic.caption && <p>{pic.caption}</p>}
+                  </div>
+                </button>
+              ))}
+            </div>
+          </section>
+        )}
+
         <section className="contact" id="contact">
           <div>
-            <small className="eyebrow">LET&apos;S GET YOU MOVING</small>
+            <small className="eyebrow">{t.contact.eyebrow}</small>
             <h2>
-              Have a trip
+              {t.contact.titleLine1}
               <br />
-              in <i>mind?</i>
+              <i>{t.contact.titleAccent}</i>
             </h2>
-            <p>Talk to our team and tell us where you want to go.</p>
+            <p>{t.contact.subtitle}</p>
             {socialLinks.length > 0 && (
               <div className="social-public-wrap">
-                <small className="eyebrow">FOLLOW TNP</small>
+                <small className="eyebrow">{t.contact.followUs}</small>
                 <div className="social-public-grid">
-                  {socialLinks.map((link) => (
-                    <a
-                      key={link.id}
-                      href={link.url}
-                      target="_blank"
-                      rel="noopener noreferrer"
-                      className="social-public-btn"
-                    >
-                      <Share2 size={15} />
-                      <span>
-                        <b>{link.platform}</b>
-                        {link.label && link.label !== link.platform && <small>{link.label}</small>}
-                      </span>
-                      <ExternalLink size={14} />
-                    </a>
-                  ))}
+                  {socialLinks.map((link) => {
+                    const brandKey = detectSocialPlatform(link.platform, link.url);
+                    const accessibleTitle =
+                      link.label && link.label !== link.platform
+                        ? `${link.platform} (${link.label})`
+                        : link.platform;
+                    return (
+                      <a
+                        key={link.id}
+                        href={link.url}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        className={`social-icon-btn social-brand-${brandKey}`}
+                        aria-label={accessibleTitle}
+                        title={accessibleTitle}
+                      >
+                        <SocialPlatformIcon platform={link.platform} url={link.url} size={20} />
+                      </a>
+                    );
+                  })}
                 </div>
               </div>
             )}
@@ -1143,24 +1297,24 @@ export default function App() {
             <a href={wa} target="_blank" rel="noreferrer">
               <MessageCircle />
               <span>
-                <small>WHATSAPP</small>
-                <b>+{phone}</b>
+                <small>{t.contact.whatsappLabel}</small>
+                <b>+{whatsappNumber}</b>
               </span>
               <ArrowRight />
             </a>
-            <a href={`mailto:${email}`}>
+            <a href={`mailto:${contactEmail}`}>
               <Mail />
               <span>
-                <small>EMAIL</small>
-                <b>{email}</b>
+                <small>{t.contact.emailLabel}</small>
+                <b>{contactEmail}</b>
               </span>
               <ArrowRight />
             </a>
             <button onClick={() => setBooking(true)}>
               <Send />
               <span>
-                <small>BOOKING INQUIRY</small>
-                <b>Send your travel request</b>
+                <small>{t.contact.bookingLabel}</small>
+                <b>{t.contact.bookingCta}</b>
               </span>
               <ArrowRight />
             </button>
@@ -1171,26 +1325,38 @@ export default function App() {
       <footer>
         <img src="/tnp-logo.jpg" alt="TNP Travel Agency" />
         <div className="footer-center">
-          <span>© {new Date().getFullYear()} TNP Travel Agency. Explore the World with TNP.</span>
+          <span>
+            © {new Date().getFullYear()} {t.footer.rights}
+          </span>
           {socialLinks.length > 0 && (
             <div className="footer-socials">
-              {socialLinks.map((link) => (
-                <a
-                  key={link.id}
-                  href={link.url}
-                  target="_blank"
-                  rel="noopener noreferrer"
-                >
-                  {link.platform} <ExternalLink size={11} />
-                </a>
-              ))}
+              {socialLinks.map((link) => {
+                const brandKey = detectSocialPlatform(link.platform, link.url);
+                const accessibleTitle =
+                  link.label && link.label !== link.platform
+                    ? `${link.platform} (${link.label})`
+                    : link.platform;
+                return (
+                  <a
+                    key={link.id}
+                    href={link.url}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className={`footer-social-icon social-brand-${brandKey}`}
+                    aria-label={accessibleTitle}
+                    title={accessibleTitle}
+                  >
+                    <SocialPlatformIcon platform={link.platform} url={link.url} size={17} />
+                  </a>
+                );
+              })}
             </div>
           )}
         </div>
         <span className="footer-spacer" aria-hidden="true" />
       </footer>
 
-      <a className="wa-float" href={wa} target="_blank" rel="noreferrer" aria-label="Chat on WhatsApp">
+      <a className="wa-float" href={wa} target="_blank" rel="noreferrer" aria-label={t.footer.whatsappAria}>
         <MessageCircle />
       </a>
 
@@ -1200,19 +1366,19 @@ export default function App() {
             <button className="close" onClick={() => setBooking(false)} aria-label="Close modal">
               <X />
             </button>
-            <small className="eyebrow">START YOUR JOURNEY</small>
+            <small className="eyebrow">{t.bookingModal.eyebrow}</small>
             <h2>
-              Make a booking <i>inquiry.</i>
+              {t.bookingModal.titleLine1} <i>{t.bookingModal.titleAccent}</i>
             </h2>
-            <p>Share your details. Our team will confirm availability, pricing and next steps.</p>
+            <p>{t.bookingModal.subtitle}</p>
             <form onSubmit={submit}>
               <div className="fields">
                 <label>
-                  Full name
+                  {t.bookingModal.fullName}
                   <input required value={f.name} onChange={(e) => setField('name', e.target.value)} />
                 </label>
                 <label>
-                  Email
+                  {t.bookingModal.email}
                   <input
                     required
                     type="email"
@@ -1221,33 +1387,33 @@ export default function App() {
                   />
                 </label>
                 <label>
-                  Phone / WhatsApp
+                  {t.bookingModal.phone}
                   <input required value={f.phone} onChange={(e) => setField('phone', e.target.value)} />
                 </label>
                 <label>
-                  Service
+                  {t.bookingModal.service}
                   <select value={f.service} onChange={(e) => setField('service', e.target.value)}>
                     {services.map((s) => (
                       <option key={s.id} value={s.name}>
-                        {s.name}
+                        {t.services.items[s.name]?.name || s.name}
                       </option>
                     ))}
                   </select>
                 </label>
                 <label>
-                  Destination
+                  {t.bookingModal.destination}
                   <input
                     value={f.destination}
                     onChange={(e) => setField('destination', e.target.value)}
                   />
                 </label>
                 <label>
-                  Travel date
+                  {t.bookingModal.travelDate}
                   <input type="date" value={f.date} onChange={(e) => setField('date', e.target.value)} />
                 </label>
               </div>
               <label>
-                Additional details
+                {t.bookingModal.details}
                 <textarea
                   rows={3}
                   value={f.details}
@@ -1255,7 +1421,7 @@ export default function App() {
                 />
               </label>
               <button className="primary wide" disabled={busy}>
-                {busy ? 'Submitting…' : 'Submit inquiry'} <ArrowRight />
+                {busy ? t.bookingModal.submitting : t.bookingModal.submit} <ArrowRight />
               </button>
               {hasInquiryDraftContent(f) && (
                 <button
@@ -1263,7 +1429,7 @@ export default function App() {
                   className="auth-mode-switch"
                   onClick={clearInquiryDraft}
                 >
-                  Clear saved draft
+                  {t.bookingModal.clearDraft}
                 </button>
               )}
               {msg && (
@@ -1276,12 +1442,42 @@ export default function App() {
                       target="_blank"
                       rel="noreferrer"
                     >
-                      <MessageCircle size={15} /> Send copy on WhatsApp
+                      <MessageCircle size={15} /> {t.bookingModal.sendWhatsappCopy}
                     </a>
                   )}
                 </div>
               )}
             </form>
+          </div>
+        </div>
+      )}
+      {lightboxPicture && (
+        <div className="overlay" onClick={() => setLightboxPicture(null)}>
+          <div className="modal gallery-lightbox" onClick={(e) => e.stopPropagation()}>
+            <button
+              type="button"
+              className="close"
+              onClick={() => setLightboxPicture(null)}
+              aria-label="Close picture preview"
+            >
+              <X />
+            </button>
+            <div className="gallery-lightbox-img">
+              <img src={lightboxPicture.image_url} alt={lightboxPicture.title} />
+            </div>
+            <h3>{lightboxPicture.title}</h3>
+            {lightboxPicture.caption && <p>{lightboxPicture.caption}</p>}
+            <button
+              type="button"
+              className="primary"
+              onClick={() => {
+                setField('details', `${t.gallery.regardingPrefix} ${lightboxPicture.title}`);
+                setLightboxPicture(null);
+                setBooking(true);
+              }}
+            >
+              {t.gallery.inquireItem} <ArrowRight size={16} />
+            </button>
           </div>
         </div>
       )}

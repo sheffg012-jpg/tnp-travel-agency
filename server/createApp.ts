@@ -66,6 +66,22 @@ interface SocialLinkRecord {
   created_at: string;
 }
 
+const PICTURE_PLACEMENTS = ['gallery', 'hero', 'feature', 'about'] as const;
+type PicturePlacement = (typeof PICTURE_PLACEMENTS)[number];
+
+interface SitePictureRecord {
+  id: string;
+  title: string;
+  caption: string;
+  placement: PicturePlacement;
+  image_url: string;
+  storage_path?: string | null;
+  active: boolean;
+  sort_order: number;
+  created_at: string;
+  updated_at: string;
+}
+
 interface ClaimedAdmin {
   username: string;
   salt: string;
@@ -132,6 +148,84 @@ const loginAttempts = new Map<string, { count: number; resetAt: number }>();
 
 const bookings: BookingRecord[] = [];
 const socialLinks: SocialLinkRecord[] = [];
+let contactEmail = (process.env.VITE_CONTACT_EMAIL || 'agencytnptravel@gmail.com').trim();
+let whatsappNumber = (process.env.VITE_WHATSAPP_NUMBER || '250788697728').replace(/\D/g, '') || '250788697728';
+const pictureBlobs = new Map<string, { buffer: Buffer; mime: string }>();
+const nowIso = new Date().toISOString();
+const sitePictures: SitePictureRecord[] = [
+  {
+    id: 'pic-hero-default',
+    title: 'Explore the World with TNP',
+    caption: 'Main hero banner showcased on the home page.',
+    placement: 'hero',
+    image_url: '/tnp-main-poster.jpg',
+    storage_path: null,
+    active: true,
+    sort_order: 1,
+    created_at: nowIso,
+    updated_at: nowIso,
+  },
+  {
+    id: 'pic-feature-default',
+    title: 'Flight & Travel Support',
+    caption: 'Featured banner for air ticketing and travel assistance.',
+    placement: 'feature',
+    image_url: '/tnp-air-ticketing.jpg',
+    storage_path: null,
+    active: true,
+    sort_order: 2,
+    created_at: nowIso,
+    updated_at: nowIso,
+  },
+  {
+    id: 'pic-about-default',
+    title: 'TNP Travel Agency Brand',
+    caption: 'Official logo & visual displayed in the About section.',
+    placement: 'about',
+    image_url: '/tnp-logo.jpg',
+    storage_path: null,
+    active: true,
+    sort_order: 3,
+    created_at: nowIso,
+    updated_at: nowIso,
+  },
+  {
+    id: 'pic-gallery-1',
+    title: 'Complete Travel Services',
+    caption: 'Flights, visas, hotel reservations, and end-to-end trip planning.',
+    placement: 'gallery',
+    image_url: '/tnp-services.jpg',
+    storage_path: null,
+    active: true,
+    sort_order: 4,
+    created_at: nowIso,
+    updated_at: nowIso,
+  },
+  {
+    id: 'pic-gallery-2',
+    title: 'Global Travel Campaigns',
+    caption: 'Tailored international holiday, study, and business travel support.',
+    placement: 'gallery',
+    image_url: '/tnp-social-campaigns.jpg',
+    storage_path: null,
+    active: true,
+    sort_order: 5,
+    created_at: nowIso,
+    updated_at: nowIso,
+  },
+  {
+    id: 'pic-gallery-3',
+    title: 'Air Ticketing & Reservations',
+    caption: 'Responsive ticketing desk connecting you to destinations worldwide.',
+    placement: 'gallery',
+    image_url: '/tnp-air-ticketing.jpg',
+    storage_path: null,
+    active: true,
+    sort_order: 6,
+    created_at: nowIso,
+    updated_at: nowIso,
+  },
+];
 
 const services: ServiceRecord[] = [
   { id: 'svc-1', name: 'Air ticketing', description: 'Flight inquiries and ticketing support.', icon: 'Plane', active: true, created_at: new Date().toISOString() },
@@ -442,6 +536,122 @@ function mapSupabaseSocialLink(row: Record<string, unknown>): SocialLinkRecord {
   };
 }
 
+function validatePictureUrl(raw: unknown): string | null {
+  if (typeof raw !== 'string') return null;
+  const trimmed = raw.trim();
+  if (!trimmed || trimmed.length > 600) return null;
+  if (trimmed.startsWith('/')) {
+    if (trimmed.startsWith('//') || trimmed.includes('..') || /[\s"'<>\\]/.test(trimmed)) {
+      return null;
+    }
+    return trimmed;
+  }
+  return validateHttpUrl(trimmed);
+}
+
+function parseValidatedImageDataUrl(raw: unknown): { buffer: Buffer; mime: string; ext: string } | null {
+  if (typeof raw !== 'string') return null;
+  const match = raw.trim().match(/^data:(image\/(?:jpeg|jpg|png|webp|gif));base64,([A-Za-z0-9+/=\s]+)$/i);
+  if (!match) return null;
+
+  const base64Clean = match[2].replace(/\s+/g, '');
+  const buffer = Buffer.from(base64Clean, 'base64');
+  if (buffer.length < 8 || buffer.length > 3 * 1024 * 1024) {
+    return null;
+  }
+
+  // Verify actual binary magic bytes (blocks spoofed MIME types)
+  if (buffer[0] === 0xff && buffer[1] === 0xd8 && buffer[2] === 0xff) {
+    return { buffer, mime: 'image/jpeg', ext: 'jpg' };
+  }
+  if (
+    buffer[0] === 0x89 &&
+    buffer[1] === 0x50 &&
+    buffer[2] === 0x4e &&
+    buffer[3] === 0x47 &&
+    buffer[4] === 0x0d &&
+    buffer[5] === 0x0a &&
+    buffer[6] === 0x1a &&
+    buffer[7] === 0x0a
+  ) {
+    return { buffer, mime: 'image/png', ext: 'png' };
+  }
+  if (buffer.subarray(0, 4).toString('ascii') === 'GIF8') {
+    return { buffer, mime: 'image/gif', ext: 'gif' };
+  }
+  if (
+    buffer.length >= 12 &&
+    buffer.subarray(0, 4).toString('ascii') === 'RIFF' &&
+    buffer.subarray(8, 12).toString('ascii') === 'WEBP'
+  ) {
+    return { buffer, mime: 'image/webp', ext: 'webp' };
+  }
+
+  return null;
+}
+
+function mapSupabasePicture(row: Record<string, unknown>): SitePictureRecord {
+  const rawPlacement = String(row.placement || 'gallery') as PicturePlacement;
+  return {
+    id: String(row.id),
+    title: String(row.title || ''),
+    caption: String(row.caption || ''),
+    placement: PICTURE_PLACEMENTS.includes(rawPlacement) ? rawPlacement : 'gallery',
+    image_url: String(row.image_url || ''),
+    storage_path: row.storage_path ? String(row.storage_path) : null,
+    active: Boolean(row.active ?? true),
+    sort_order: Number(row.sort_order ?? 0),
+    created_at: String(row.created_at || new Date().toISOString()),
+    updated_at: String(row.updated_at || row.created_at || new Date().toISOString()),
+  };
+}
+
+async function uploadPictureToStorage(
+  buffer: Buffer,
+  mime: string,
+  ext: string,
+  placement: PicturePlacement,
+  pictureId: string,
+): Promise<{ imageUrl: string; storagePath: string } | null> {
+  if (!supabaseAdmin) return null;
+  const bucketName = 'site-pictures';
+  try {
+    const { data: bucket } = await supabaseAdmin.storage.getBucket(bucketName);
+    if (!bucket) {
+      await supabaseAdmin.storage.createBucket(bucketName, {
+        public: true,
+        fileSizeLimit: 5242880,
+        allowedMimeTypes: ['image/jpeg', 'image/png', 'image/webp', 'image/gif'],
+      });
+    }
+
+    const storagePath = `${placement}/${pictureId}-${Date.now()}.${ext}`;
+    const { error: uploadErr } = await supabaseAdmin.storage
+      .from(bucketName)
+      .upload(storagePath, buffer, { contentType: mime, upsert: true });
+
+    if (uploadErr) {
+      return null;
+    }
+
+    const { data: publicData } = supabaseAdmin.storage.from(bucketName).getPublicUrl(storagePath);
+    if (!publicData?.publicUrl) return null;
+
+    return { imageUrl: publicData.publicUrl, storagePath };
+  } catch {
+    return null;
+  }
+}
+
+async function removePictureFromStorage(storagePath?: string | null): Promise<void> {
+  if (!supabaseAdmin || !storagePath) return;
+  try {
+    await supabaseAdmin.storage.from('site-pictures').remove([storagePath]);
+  } catch {
+    // Non-fatal cleanup
+  }
+}
+
 interface SupabaseMinimalUser {
   id: string;
   email?: string | null;
@@ -712,7 +922,16 @@ async function verifySupabaseAuthAdmin(
 export function createApiApp(): Express {
   const app = express();
   app.set('trust proxy', 1);
-  app.use(express.json({ limit: '100kb' }));
+
+  const defaultJsonParser = express.json({ limit: '100kb' });
+  const picturesJsonParser = express.json({ limit: '4mb' });
+  app.use((req, res, next) => {
+    if (req.path.startsWith('/api/admin/pictures')) {
+      picturesJsonParser(req, res, next);
+      return;
+    }
+    defaultJsonParser(req, res, next);
+  });
 
   app.use((_req, res, next) => {
     res.setHeader('X-Content-Type-Options', 'nosniff');
@@ -720,11 +939,14 @@ export function createApiApp(): Express {
     next();
   });
 
-  // Public catalog (active services, destinations, and social links)
+  // Public catalog (active services, destinations, social links, and site pictures)
   app.get('/api/catalog', async (_req, res) => {
     let resolvedServices = services.filter((s) => s.active);
     let resolvedDestinations = destinations.filter((d) => d.active);
     let resolvedSocialLinks = socialLinks.filter((l) => l.active);
+    let resolvedPictures = sitePictures.filter((p) => p.active);
+    let resolvedContactEmail = contactEmail;
+    let resolvedWhatsappNumber = whatsappNumber;
 
     if (supabasePublic) {
       try {
@@ -732,10 +954,22 @@ export function createApiApp(): Express {
           { data: svcRows, error: svcErr },
           { data: dstRows, error: dstErr },
           { data: socRows, error: socErr },
+          { data: picRows, error: picErr },
+          { data: setRows, error: setErr },
         ] = await Promise.all([
           supabasePublic.from('services').select('*').eq('active', true).order('created_at', { ascending: true }),
           supabasePublic.from('destinations').select('*').eq('active', true).order('name', { ascending: true }),
           supabasePublic.from('social_links').select('*').eq('active', true).order('sort_order', { ascending: true }).order('created_at', { ascending: true }),
+          supabasePublic
+            .from('site_pictures')
+            .select('id, title, caption, placement, image_url, active, sort_order, created_at, updated_at')
+            .eq('active', true)
+            .order('sort_order', { ascending: true })
+            .order('updated_at', { ascending: false }),
+          supabasePublic
+            .from('site_settings')
+            .select('key, value')
+            .in('key', ['contact_email', 'whatsapp_number']),
         ]);
 
         if (!svcErr && Array.isArray(svcRows) && svcRows.length > 0) {
@@ -751,6 +985,20 @@ export function createApiApp(): Express {
         if (!socErr && Array.isArray(socRows)) {
           resolvedSocialLinks = socRows.map((r) => mapSupabaseSocialLink(r as Record<string, unknown>));
         }
+        if (!picErr && Array.isArray(picRows) && picRows.length > 0) {
+          resolvedPictures = picRows.map((r) => mapSupabasePicture(r as Record<string, unknown>));
+        }
+        if (!setErr && Array.isArray(setRows)) {
+          for (const row of setRows) {
+            const r = row as { key?: string; value?: string };
+            if (r.key === 'contact_email' && r.value) {
+              resolvedContactEmail = r.value.trim();
+            } else if (r.key === 'whatsapp_number' && r.value) {
+              const digits = r.value.replace(/\D/g, '');
+              if (digits) resolvedWhatsappNumber = digits;
+            }
+          }
+        }
       } catch {
         // Fall back to default/memory catalog if Supabase tables are not yet initialized
       }
@@ -760,7 +1008,58 @@ export function createApiApp(): Express {
       services: resolvedServices,
       destinations: resolvedDestinations,
       socialLinks: resolvedSocialLinks,
+      pictures: resolvedPictures.map(({ storage_path: _sp, ...pub }) => pub),
+      settings: {
+        contact_email: resolvedContactEmail,
+        whatsapp_number: resolvedWhatsappNumber,
+      },
     });
+  });
+
+  // Public image fallback endpoint for uploaded images stored when Storage bucket is unavailable
+  app.get('/api/pictures/:id/file', async (req, res) => {
+    const picId = cleanStr(req.params.id, 100);
+    if (!picId) {
+      res.status(400).end();
+      return;
+    }
+
+    const memBlob = pictureBlobs.get(picId);
+    if (memBlob) {
+      res.setHeader('Content-Type', memBlob.mime);
+      res.setHeader('Cache-Control', 'public, max-age=3600');
+      res.setHeader('X-Content-Type-Options', 'nosniff');
+      res.send(memBlob.buffer);
+      return;
+    }
+
+    const dbClient = supabaseAdmin || supabasePublic;
+    if (dbClient) {
+      try {
+        const { data } = await dbClient
+          .from('site_pictures')
+          .select('image_base64, image_mime, active')
+          .eq('id', picId)
+          .maybeSingle();
+
+        if (data && data.active !== false && typeof data.image_base64 === 'string' && data.image_base64) {
+          const mime =
+            typeof data.image_mime === 'string' && /^image\/(jpeg|png|webp|gif)$/i.test(data.image_mime)
+              ? data.image_mime
+              : 'image/jpeg';
+          const buf = Buffer.from(data.image_base64, 'base64');
+          res.setHeader('Content-Type', mime);
+          res.setHeader('Cache-Control', 'public, max-age=3600');
+          res.setHeader('X-Content-Type-Options', 'nosniff');
+          res.send(buf);
+          return;
+        }
+      } catch {
+        // Not found
+      }
+    }
+
+    res.status(404).end();
   });
 
   // Public booking inquiry creation
@@ -1797,6 +2096,428 @@ export function createApiApp(): Express {
     }
     socialLinks.splice(idx, 1);
     res.json({ ok: true });
+  });
+
+  // Admin pictures & gallery management
+  app.get('/api/admin/pictures', requireAdmin, async (_req, res) => {
+    if (supabaseAdmin) {
+      try {
+        const { data, error } = await supabaseAdmin
+          .from('site_pictures')
+          .select('id, title, caption, placement, image_url, storage_path, active, sort_order, created_at, updated_at')
+          .order('sort_order', { ascending: true })
+          .order('updated_at', { ascending: false });
+
+        if (!error && Array.isArray(data)) {
+          res.json({
+            pictures: data.map((r) => mapSupabasePicture(r as Record<string, unknown>)),
+            tableReady: true,
+          });
+          return;
+        }
+      } catch {
+        // Table not yet created in Supabase
+      }
+    } else if (supabasePublic) {
+      try {
+        const { data, error } = await supabasePublic
+          .from('site_pictures')
+          .select('id, title, caption, placement, image_url, active, sort_order, created_at, updated_at')
+          .order('sort_order', { ascending: true })
+          .order('updated_at', { ascending: false });
+
+        if (!error && Array.isArray(data) && data.length > 0) {
+          res.json({
+            pictures: data.map((r) => mapSupabasePicture(r as Record<string, unknown>)),
+            tableReady: true,
+          });
+          return;
+        }
+      } catch {
+        // Fall through
+      }
+    }
+
+    res.json({
+      pictures: sitePictures,
+      tableReady: !supabaseAdmin,
+    });
+  });
+
+  app.post('/api/admin/pictures', requireAdmin, async (req, res) => {
+    const title = cleanStr(req.body?.title, 120);
+    const caption = cleanStr(req.body?.caption, 280);
+    const rawPlacement = cleanStr(req.body?.placement, 30) as PicturePlacement;
+    const placement: PicturePlacement = PICTURE_PLACEMENTS.includes(rawPlacement) ? rawPlacement : 'gallery';
+    const parsedUpload = parseValidatedImageDataUrl(req.body?.imageDataUrl);
+    const externalUrl = validatePictureUrl(req.body?.image_url);
+
+    if (!title) {
+      res.status(400).json({ error: 'Picture title is required.' });
+      return;
+    }
+    if (!parsedUpload && !externalUrl) {
+      res.status(400).json({
+        error: 'Please upload a valid image file (JPG, PNG, WebP, or GIF under 3MB) or enter a valid image URL.',
+      });
+      return;
+    }
+
+    const pictureId = crypto.randomUUID();
+    const now = new Date().toISOString();
+    let finalImageUrl = externalUrl || '';
+    let storagePath: string | null = null;
+    let fallbackBase64: string | null = null;
+    let fallbackMime: string | null = null;
+
+    if (parsedUpload) {
+      const uploaded = await uploadPictureToStorage(
+        parsedUpload.buffer,
+        parsedUpload.mime,
+        parsedUpload.ext,
+        placement,
+        pictureId,
+      );
+      if (uploaded) {
+        finalImageUrl = uploaded.imageUrl;
+        storagePath = uploaded.storagePath;
+      } else {
+        pictureBlobs.set(pictureId, { buffer: parsedUpload.buffer, mime: parsedUpload.mime });
+        finalImageUrl = `/api/pictures/${pictureId}/file?v=${Date.now()}`;
+        fallbackBase64 = parsedUpload.buffer.toString('base64');
+        fallbackMime = parsedUpload.mime;
+      }
+    }
+
+    // Put newly uploaded hero/feature/about images first so they take priority on the public site
+    const nextSortOrder = placement === 'gallery' ? sitePictures.length + 10 : 0;
+
+    if (supabaseAdmin) {
+      try {
+        const { data, error } = await supabaseAdmin
+          .from('site_pictures')
+          .insert({
+            id: pictureId,
+            title,
+            caption,
+            placement,
+            image_url: finalImageUrl,
+            storage_path: storagePath,
+            image_base64: fallbackBase64,
+            image_mime: fallbackMime,
+            active: true,
+            sort_order: nextSortOrder,
+          })
+          .select('id, title, caption, placement, image_url, storage_path, active, sort_order, created_at, updated_at')
+          .single();
+
+        if (!error && data) {
+          res.status(201).json({ picture: mapSupabasePicture(data as Record<string, unknown>) });
+          return;
+        }
+        if (error && !/relation|does not exist|schema cache/i.test(error.message || '')) {
+          res.status(400).json({ error: error.message });
+          return;
+        }
+      } catch {
+        // Fall back to in-memory store if migration 006 hasn't been applied yet
+      }
+    }
+
+    const created: SitePictureRecord = {
+      id: pictureId,
+      title,
+      caption,
+      placement,
+      image_url: finalImageUrl,
+      storage_path: storagePath,
+      active: true,
+      sort_order: nextSortOrder,
+      created_at: now,
+      updated_at: now,
+    };
+    if (placement === 'gallery') {
+      sitePictures.push(created);
+    } else {
+      sitePictures.unshift(created);
+    }
+    res.status(201).json({ picture: created });
+  });
+
+  app.patch('/api/admin/pictures/:id', requireAdmin, async (req, res) => {
+    const pictureId = cleanStr(req.params.id, 100);
+    const updates: Record<string, unknown> = {};
+
+    if (typeof req.body?.active === 'boolean') updates.active = req.body.active;
+    if (typeof req.body?.title === 'string') {
+      const cleanTitle = cleanStr(req.body.title, 120);
+      if (!cleanTitle) {
+        res.status(400).json({ error: 'Picture title cannot be empty.' });
+        return;
+      }
+      updates.title = cleanTitle;
+    }
+    if (typeof req.body?.caption === 'string') {
+      updates.caption = cleanStr(req.body.caption, 280);
+    }
+    if (req.body?.placement !== undefined) {
+      const rawPlacement = cleanStr(req.body.placement, 30) as PicturePlacement;
+      if (!PICTURE_PLACEMENTS.includes(rawPlacement)) {
+        res.status(400).json({ error: 'Invalid placement option.' });
+        return;
+      }
+      updates.placement = rawPlacement;
+      if (rawPlacement !== 'gallery') {
+        updates.sort_order = 0;
+      }
+    }
+
+    const parsedUpload = req.body?.imageDataUrl ? parseValidatedImageDataUrl(req.body.imageDataUrl) : null;
+    if (req.body?.imageDataUrl && !parsedUpload) {
+      res.status(400).json({
+        error: 'Uploaded image must be a valid JPG, PNG, WebP, or GIF file under 3MB.',
+      });
+      return;
+    }
+
+    if (!parsedUpload && req.body?.image_url !== undefined) {
+      const validUrl = validatePictureUrl(req.body.image_url);
+      if (!validUrl) {
+        res.status(400).json({ error: 'Please provide a valid image URL starting with https://, http://, or /' });
+        return;
+      }
+      updates.image_url = validUrl;
+      updates.image_base64 = null;
+      updates.image_mime = null;
+      updates.storage_path = null;
+    }
+
+    if (supabaseAdmin) {
+      try {
+        const { data: existing, error: findErr } = await supabaseAdmin
+          .from('site_pictures')
+          .select('id, placement, storage_path')
+          .eq('id', pictureId)
+          .maybeSingle();
+
+        if (!findErr && existing) {
+          const targetPlacement =
+            (updates.placement as PicturePlacement | undefined) ||
+            (PICTURE_PLACEMENTS.includes(String(existing.placement) as PicturePlacement)
+              ? (String(existing.placement) as PicturePlacement)
+              : 'gallery');
+
+          if (parsedUpload) {
+            const uploaded = await uploadPictureToStorage(
+              parsedUpload.buffer,
+              parsedUpload.mime,
+              parsedUpload.ext,
+              targetPlacement,
+              pictureId,
+            );
+            if (uploaded) {
+              updates.image_url = uploaded.imageUrl;
+              updates.storage_path = uploaded.storagePath;
+              updates.image_base64 = null;
+              updates.image_mime = null;
+            } else {
+              pictureBlobs.set(pictureId, { buffer: parsedUpload.buffer, mime: parsedUpload.mime });
+              updates.image_url = `/api/pictures/${pictureId}/file?v=${Date.now()}`;
+              updates.storage_path = null;
+              updates.image_base64 = parsedUpload.buffer.toString('base64');
+              updates.image_mime = parsedUpload.mime;
+            }
+            if (existing.storage_path) {
+              await removePictureFromStorage(String(existing.storage_path));
+            }
+          } else if (updates.image_url && existing.storage_path) {
+            await removePictureFromStorage(String(existing.storage_path));
+          }
+
+          const { data, error } = await supabaseAdmin
+            .from('site_pictures')
+            .update(updates)
+            .eq('id', pictureId)
+            .select('id, title, caption, placement, image_url, storage_path, active, sort_order, created_at, updated_at')
+            .single();
+
+          if (error || !data) {
+            res.status(400).json({ error: error?.message || 'Could not update picture.' });
+            return;
+          }
+          res.json({ picture: mapSupabasePicture(data as Record<string, unknown>) });
+          return;
+        }
+      } catch {
+        // Fall through to in-memory array
+      }
+    }
+
+    const target = sitePictures.find((p) => p.id === pictureId);
+    if (!target) {
+      res.status(404).json({ error: 'Picture not found.' });
+      return;
+    }
+
+    const targetPlacement = (updates.placement as PicturePlacement | undefined) || target.placement;
+    if (parsedUpload) {
+      const uploaded = await uploadPictureToStorage(
+        parsedUpload.buffer,
+        parsedUpload.mime,
+        parsedUpload.ext,
+        targetPlacement,
+        pictureId,
+      );
+      if (uploaded) {
+        if (target.storage_path) await removePictureFromStorage(target.storage_path);
+        target.image_url = uploaded.imageUrl;
+        target.storage_path = uploaded.storagePath;
+      } else {
+        pictureBlobs.set(pictureId, { buffer: parsedUpload.buffer, mime: parsedUpload.mime });
+        target.image_url = `/api/pictures/${pictureId}/file?v=${Date.now()}`;
+        target.storage_path = null;
+      }
+    } else if (typeof updates.image_url === 'string') {
+      target.image_url = updates.image_url;
+      target.storage_path = null;
+    }
+
+    if (typeof updates.active === 'boolean') target.active = updates.active;
+    if (typeof updates.title === 'string') target.title = updates.title;
+    if (typeof updates.caption === 'string') target.caption = updates.caption;
+    if (typeof updates.placement === 'string') target.placement = updates.placement as PicturePlacement;
+    if (typeof updates.sort_order === 'number') target.sort_order = updates.sort_order;
+    target.updated_at = new Date().toISOString();
+
+    res.json({ picture: target });
+  });
+
+  app.delete('/api/admin/pictures/:id', requireAdmin, async (req, res) => {
+    const pictureId = cleanStr(req.params.id, 100);
+    pictureBlobs.delete(pictureId);
+
+    if (supabaseAdmin) {
+      try {
+        const { data: existing } = await supabaseAdmin
+          .from('site_pictures')
+          .select('storage_path')
+          .eq('id', pictureId)
+          .maybeSingle();
+
+        const { error } = await supabaseAdmin.from('site_pictures').delete().eq('id', pictureId);
+        if (!error) {
+          if (existing?.storage_path) {
+            await removePictureFromStorage(String(existing.storage_path));
+          }
+          res.json({ ok: true });
+          return;
+        }
+        if (!/relation|does not exist|schema cache/i.test(error.message || '')) {
+          res.status(400).json({ error: error.message || 'Could not delete picture.' });
+          return;
+        }
+      } catch {
+        // Fall through to in-memory
+      }
+    }
+
+    const idx = sitePictures.findIndex((p) => p.id === pictureId);
+    if (idx === -1) {
+      res.status(404).json({ error: 'Picture not found.' });
+      return;
+    }
+    const [removed] = sitePictures.splice(idx, 1);
+    if (removed?.storage_path) {
+      await removePictureFromStorage(removed.storage_path);
+    }
+    res.json({ ok: true });
+  });
+
+  // Admin public contact settings (email & WhatsApp number)
+  app.get('/api/admin/settings', requireAdmin, async (_req, res) => {
+    let resolvedEmail = contactEmail;
+    let resolvedWhatsapp = whatsappNumber;
+    let tableReady = !supabaseAdmin;
+
+    const dbClient = supabaseAdmin || supabasePublic;
+    if (dbClient) {
+      try {
+        const { data, error } = await dbClient
+          .from('site_settings')
+          .select('key, value')
+          .in('key', ['contact_email', 'whatsapp_number']);
+
+        if (!error && Array.isArray(data)) {
+          tableReady = true;
+          for (const row of data) {
+            const r = row as { key?: string; value?: string };
+            if (r.key === 'contact_email' && r.value) {
+              resolvedEmail = r.value.trim();
+            } else if (r.key === 'whatsapp_number' && r.value) {
+              const digits = r.value.replace(/\D/g, '');
+              if (digits) resolvedWhatsapp = digits;
+            }
+          }
+        }
+      } catch {
+        // Table not yet created in Supabase
+      }
+    }
+
+    res.json({
+      settings: {
+        contact_email: resolvedEmail,
+        whatsapp_number: resolvedWhatsapp,
+      },
+      tableReady,
+    });
+  });
+
+  app.patch('/api/admin/settings', requireAdmin, async (req, res) => {
+    const nextEmail = cleanStr(req.body?.contact_email, 160).toLowerCase();
+    const rawWhatsapp = typeof req.body?.whatsapp_number === 'string' ? req.body.whatsapp_number : '';
+    const nextWhatsapp = rawWhatsapp.replace(/\D/g, '').slice(0, 20);
+
+    if (!nextEmail || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(nextEmail)) {
+      res.status(400).json({ error: 'Please provide a valid public contact email address.' });
+      return;
+    }
+    if (rawWhatsapp.trim() && (nextWhatsapp.length < 7 || nextWhatsapp.length > 20)) {
+      res.status(400).json({ error: 'WhatsApp number must contain 7 to 20 digits with country code.' });
+      return;
+    }
+
+    contactEmail = nextEmail;
+    if (nextWhatsapp) {
+      whatsappNumber = nextWhatsapp;
+    }
+
+    let tableReady = !supabaseAdmin;
+    if (supabaseAdmin) {
+      try {
+        const rowsToSave = [{ key: 'contact_email', value: contactEmail }];
+        if (nextWhatsapp) {
+          rowsToSave.push({ key: 'whatsapp_number', value: whatsappNumber });
+        }
+        const { error } = await supabaseAdmin.from('site_settings').upsert(rowsToSave, { onConflict: 'key' });
+        if (!error) {
+          tableReady = true;
+        } else if (!/relation|does not exist|schema cache/i.test(error.message || '')) {
+          res.status(400).json({ error: error.message });
+          return;
+        }
+      } catch {
+        // Keep in-memory update if migration 007 hasn't been applied yet
+      }
+    }
+
+    res.json({
+      settings: {
+        contact_email: contactEmail,
+        whatsapp_number: whatsappNumber,
+      },
+      tableReady,
+    });
   });
 
   // Admin team accounts management (synced with Supabase Auth & public.admin_accounts)
