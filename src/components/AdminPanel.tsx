@@ -14,6 +14,7 @@ import {
   Mail,
   MapPin,
   MessageCircle,
+  Newspaper,
   Pencil,
   Plus,
   RefreshCw,
@@ -78,6 +79,21 @@ export interface SitePictureItem {
   image_url: string;
   active: boolean;
   sort_order?: number;
+  created_at?: string;
+  updated_at?: string;
+}
+
+export type NewsCategory = 'Travel Tip' | 'Visa Update' | 'Company News' | 'Flight Alert' | 'Destination Guide';
+
+export interface TravelNewsItem {
+  id: string;
+  title: string;
+  category: NewsCategory;
+  summary: string;
+  content: string;
+  image_url: string | null;
+  published: boolean;
+  published_at: string;
   created_at?: string;
   updated_at?: string;
 }
@@ -162,6 +178,14 @@ const PICTURE_PLACEMENT_LABELS: Record<PicturePlacement, string> = {
   about: 'About Section Image',
 };
 
+const NEWS_CATEGORIES: NewsCategory[] = [
+  'Travel Tip',
+  'Visa Update',
+  'Company News',
+  'Flight Alert',
+  'Destination Guide',
+];
+
 function isSafeImageSrc(src: string): boolean {
   if (!src) return false;
   if (src.startsWith('data:image/')) {
@@ -240,7 +264,9 @@ export default function AdminPanel({
   onLogout,
   onCatalogUpdated,
 }: AdminPanelProps) {
-  const [tab, setTab] = useState<'bookings' | 'services' | 'destinations' | 'pictures' | 'social' | 'contact' | 'users'>('bookings');
+  const [tab, setTab] = useState<
+    'bookings' | 'services' | 'destinations' | 'pictures' | 'news' | 'social' | 'contact' | 'users'
+  >('bookings');
   const [bookings, setBookings] = useState<BookingItem[]>([]);
   const [stats, setStats] = useState<AdminStats>({ total: 0, pending: 0, inProgress: 0, confirmed: 0 });
   const [services, setServices] = useState<ServiceItem[]>([]);
@@ -248,6 +274,8 @@ export default function AdminPanel({
   const [socialLinks, setSocialLinks] = useState<SocialLinkItem[]>([]);
   const [pictures, setPictures] = useState<SitePictureItem[]>([]);
   const [picturesTableReady, setPicturesTableReady] = useState(true);
+  const [newsPosts, setNewsPosts] = useState<TravelNewsItem[]>([]);
+  const [newsTableReady, setNewsTableReady] = useState(true);
   const [contactEmail, setContactEmail] = useState('');
   const [whatsappNumber, setWhatsappNumber] = useState('');
   const [settingsTableReady, setSettingsTableReady] = useState(true);
@@ -298,6 +326,28 @@ export default function AdminPanel({
   const [editPicFileName, setEditPicFileName] = useState('');
   const [savingPic, setSavingPic] = useState(false);
 
+  const [newNewsTitle, setNewNewsTitle] = useState('');
+  const [newNewsCategory, setNewNewsCategory] = useState<NewsCategory>('Travel Tip');
+  const [newNewsSummary, setNewNewsSummary] = useState('');
+  const [newNewsContent, setNewNewsContent] = useState('');
+  const [newNewsImageUrl, setNewNewsImageUrl] = useState('');
+  const [newNewsImageDataUrl, setNewNewsImageDataUrl] = useState('');
+  const [newNewsImageFileName, setNewNewsImageFileName] = useState('');
+  const [newNewsPublished, setNewNewsPublished] = useState(true);
+  const [savingNews, setSavingNews] = useState(false);
+  const [newsNotice, setNewsNotice] = useState('');
+
+  const [editingNews, setEditingNews] = useState<TravelNewsItem | null>(null);
+  const [editNewsTitle, setEditNewsTitle] = useState('');
+  const [editNewsCategory, setEditNewsCategory] = useState<NewsCategory>('Travel Tip');
+  const [editNewsSummary, setEditNewsSummary] = useState('');
+  const [editNewsContent, setEditNewsContent] = useState('');
+  const [editNewsImageUrl, setEditNewsImageUrl] = useState('');
+  const [editNewsImageDataUrl, setEditNewsImageDataUrl] = useState('');
+  const [editNewsImageFileName, setEditNewsImageFileName] = useState('');
+  const [editNewsPublished, setEditNewsPublished] = useState(true);
+  const [updatingNews, setUpdatingNews] = useState(false);
+
   const [userActionMode, setUserActionMode] = useState<'invite' | 'link' | 'create'>('invite');
   const [newAdminEmail, setNewAdminEmail] = useState('');
   const [newAdminName, setNewAdminName] = useState('');
@@ -332,13 +382,14 @@ export default function AdminPanel({
     setLoading(true);
     setError('');
     try {
-      const [bRes, sRes, dRes, socRes, picRes, setRes, usrRes] = await Promise.all([
+      const [bRes, sRes, dRes, socRes, picRes, setRes, newsRes, usrRes] = await Promise.all([
         fetch('/api/admin/bookings', { headers: { Authorization: `Bearer ${token}` } }),
         fetch('/api/admin/services', { headers: { Authorization: `Bearer ${token}` } }),
         fetch('/api/admin/destinations', { headers: { Authorization: `Bearer ${token}` } }),
         fetch('/api/admin/social-links', { headers: { Authorization: `Bearer ${token}` } }),
         fetch('/api/admin/pictures', { headers: { Authorization: `Bearer ${token}` } }),
         fetch('/api/admin/settings', { headers: { Authorization: `Bearer ${token}` } }),
+        fetch('/api/admin/news', { headers: { Authorization: `Bearer ${token}` } }),
         fetch('/api/admin/users', { headers: { Authorization: `Bearer ${token}` } }),
       ]);
 
@@ -349,6 +400,7 @@ export default function AdminPanel({
         socRes.status === 401 ||
         picRes.status === 401 ||
         setRes.status === 401 ||
+        newsRes.status === 401 ||
         usrRes.status === 401
       ) {
         onLogout('Your admin session expired or could not be verified. Please sign in again.');
@@ -376,6 +428,9 @@ export default function AdminPanel({
             tableReady?: boolean;
           })
         : { settings: undefined, tableReady: true };
+      const newsData = newsRes.ok
+        ? ((await newsRes.json()) as { news?: TravelNewsItem[]; tableReady?: boolean })
+        : { news: [], tableReady: true };
       const usrData = usrRes.ok ? ((await usrRes.json()) as { users?: AdminUserItem[] }) : { users: [] };
 
       setBookings(bData.bookings);
@@ -391,6 +446,8 @@ export default function AdminPanel({
         setWhatsappNumber(setData.settings.whatsapp_number || '');
       }
       setSettingsTableReady(setData.tableReady !== false);
+      setNewsPosts(Array.isArray(newsData.news) ? newsData.news : []);
+      setNewsTableReady(newsData.tableReady !== false);
       setAdminUsers(Array.isArray(usrData.users) ? usrData.users : []);
     } catch (err: unknown) {
       setError(err instanceof Error ? err.message : 'Unable to fetch dashboard data.');
@@ -847,6 +904,178 @@ export default function AdminPanel({
     }
   }
 
+  async function handleNewNewsImageFile(e: React.ChangeEvent<HTMLInputElement>) {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    setError('');
+    setNewsNotice('');
+    try {
+      const dataUrl = await prepareImageUpload(file);
+      setNewNewsImageDataUrl(dataUrl);
+      setNewNewsImageFileName(file.name);
+      setNewNewsImageUrl('');
+    } catch (err: unknown) {
+      setError(err instanceof Error ? err.message : 'Could not process image file.');
+    } finally {
+      e.target.value = '';
+    }
+  }
+
+  async function addNewsPost(e: React.FormEvent) {
+    e.preventDefault();
+    if (!newNewsTitle.trim() || !newNewsSummary.trim()) {
+      setError('Title and short summary are required.');
+      return;
+    }
+    setSavingNews(true);
+    setError('');
+    setNewsNotice('');
+    try {
+      const res = await fetch('/api/admin/news', {
+        method: 'POST',
+        headers: authHeaders(),
+        body: JSON.stringify({
+          title: newNewsTitle.trim(),
+          category: newNewsCategory,
+          summary: newNewsSummary.trim(),
+          content: newNewsContent.trim() || newNewsSummary.trim(),
+          imageDataUrl: newNewsImageDataUrl || undefined,
+          image_url: !newNewsImageDataUrl ? newNewsImageUrl.trim() || null : undefined,
+          published: newNewsPublished,
+        }),
+      });
+      if (res.status === 401) {
+        onLogout('Your admin session expired or could not be verified. Please sign in again.');
+        return;
+      }
+      const data = (await res.json()) as { tableReady?: boolean; error?: string };
+      if (!res.ok) throw new Error(data.error || 'Could not publish news post.');
+      setNewNewsTitle('');
+      setNewNewsSummary('');
+      setNewNewsContent('');
+      setNewNewsImageUrl('');
+      setNewNewsImageDataUrl('');
+      setNewNewsImageFileName('');
+      setNewNewsPublished(true);
+      setNewsTableReady(data.tableReady !== false);
+      setNewsNotice(newNewsPublished ? 'Article published to the Travel News section.' : 'Draft saved.');
+      await loadData();
+      onCatalogUpdated();
+    } catch (err: unknown) {
+      setError(err instanceof Error ? err.message : 'Could not publish news post.');
+    } finally {
+      setSavingNews(false);
+    }
+  }
+
+  function openNewsEditor(post: TravelNewsItem) {
+    setEditingNews(post);
+    setEditNewsTitle(post.title);
+    setEditNewsCategory(post.category);
+    setEditNewsSummary(post.summary);
+    setEditNewsContent(post.content);
+    setEditNewsImageUrl(post.image_url || '');
+    setEditNewsImageDataUrl('');
+    setEditNewsImageFileName('');
+    setEditNewsPublished(post.published);
+  }
+
+  async function handleEditNewsImageFile(e: React.ChangeEvent<HTMLInputElement>) {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    setError('');
+    try {
+      const dataUrl = await prepareImageUpload(file);
+      setEditNewsImageDataUrl(dataUrl);
+      setEditNewsImageFileName(file.name);
+    } catch (err: unknown) {
+      setError(err instanceof Error ? err.message : 'Could not process image file.');
+    } finally {
+      e.target.value = '';
+    }
+  }
+
+  async function saveNewsEdit(e: React.FormEvent) {
+    e.preventDefault();
+    if (!editingNews) return;
+    setUpdatingNews(true);
+    setError('');
+    setNewsNotice('');
+    try {
+      const res = await fetch(`/api/admin/news/${editingNews.id}`, {
+        method: 'PATCH',
+        headers: authHeaders(),
+        body: JSON.stringify({
+          title: editNewsTitle.trim(),
+          category: editNewsCategory,
+          summary: editNewsSummary.trim(),
+          content: editNewsContent.trim() || editNewsSummary.trim(),
+          imageDataUrl: editNewsImageDataUrl || undefined,
+          image_url: !editNewsImageDataUrl ? editNewsImageUrl.trim() || null : undefined,
+          published: editNewsPublished,
+        }),
+      });
+      if (res.status === 401) {
+        onLogout('Your admin session expired or could not be verified. Please sign in again.');
+        return;
+      }
+      const data = (await res.json()) as { error?: string };
+      if (!res.ok) throw new Error(data.error || 'Could not update news post.');
+      setEditingNews(null);
+      setEditNewsImageDataUrl('');
+      setEditNewsImageFileName('');
+      setNewsNotice('Travel News post updated.');
+      await loadData();
+      onCatalogUpdated();
+    } catch (err: unknown) {
+      setError(err instanceof Error ? err.message : 'Could not update news post.');
+    } finally {
+      setUpdatingNews(false);
+    }
+  }
+
+  async function toggleNewsPublished(post: TravelNewsItem) {
+    setError('');
+    setNewsNotice('');
+    try {
+      const res = await fetch(`/api/admin/news/${post.id}`, {
+        method: 'PATCH',
+        headers: authHeaders(),
+        body: JSON.stringify({ published: !post.published }),
+      });
+      if (res.status === 401) {
+        onLogout('Your admin session expired or could not be verified. Please sign in again.');
+        return;
+      }
+      if (!res.ok) throw new Error('Could not update post visibility.');
+      await loadData();
+      onCatalogUpdated();
+    } catch (err: unknown) {
+      setError(err instanceof Error ? err.message : 'Could not update post visibility.');
+    }
+  }
+
+  async function deleteNewsPost(id: string) {
+    setError('');
+    setNewsNotice('');
+    try {
+      const res = await fetch(`/api/admin/news/${id}`, {
+        method: 'DELETE',
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      if (res.status === 401) {
+        onLogout('Your admin session expired or could not be verified. Please sign in again.');
+        return;
+      }
+      if (!res.ok) throw new Error('Could not delete news post.');
+      if (editingNews?.id === id) setEditingNews(null);
+      await loadData();
+      onCatalogUpdated();
+    } catch (err: unknown) {
+      setError(err instanceof Error ? err.message : 'Could not delete news post.');
+    }
+  }
+
   async function addOrInviteAdminUser(e: React.FormEvent) {
     e.preventDefault();
     if (!newAdminEmail.trim()) return;
@@ -1079,6 +1308,13 @@ export default function AdminPanel({
             onClick={() => setTab('pictures')}
           >
             <ImageIcon size={16} /> Pictures ({pictures.length})
+          </button>
+          <button
+            type="button"
+            className={tab === 'news' ? 'active' : ''}
+            onClick={() => setTab('news')}
+          >
+            <Newspaper size={16} /> Travel News ({newsPosts.length})
           </button>
           <button
             type="button"
@@ -1548,6 +1784,168 @@ export default function AdminPanel({
           </div>
         )}
 
+        {tab === 'news' && (
+          <div className="admin-panel-card">
+            {!newsTableReady && (
+              <div className="notice-error" style={{ marginTop: 0, marginBottom: 16 }}>
+                Supabase table <strong>travel_news</strong> is not initialized yet. Run migrations{' '}
+                <code>008_travel_news.sql</code> and <code>009_travel_news_images.sql</code> in Supabase SQL Editor so news posts and uploaded images persist across deployments.
+              </div>
+            )}
+
+            <form className="admin-news-form" onSubmit={addNewsPost}>
+              <div className="admin-news-row">
+                <input
+                  type="text"
+                  required
+                  placeholder="Headline (e.g. Schengen Visa Processing Tips for Summer Travel)"
+                  value={newNewsTitle}
+                  onChange={(e) => setNewNewsTitle(e.target.value)}
+                />
+                <select
+                  className="admin-select"
+                  value={newNewsCategory}
+                  onChange={(e) => setNewNewsCategory(e.target.value as NewsCategory)}
+                >
+                  {NEWS_CATEGORIES.map((cat) => (
+                    <option key={cat} value={cat}>
+                      {cat}
+                    </option>
+                  ))}
+                </select>
+              </div>
+              <input
+                type="text"
+                required
+                placeholder="Short summary shown on the landing page card"
+                value={newNewsSummary}
+                onChange={(e) => setNewNewsSummary(e.target.value)}
+              />
+              <textarea
+                rows={4}
+                placeholder="Full article details, travel tips, visa requirements, or company announcement..."
+                value={newNewsContent}
+                onChange={(e) => setNewNewsContent(e.target.value)}
+              />
+              <div className="admin-picture-upload-row">
+                <label className="admin-file-picker">
+                  <Upload size={16} />
+                  <span>
+                    {newNewsImageFileName ? `Selected: ${newNewsImageFileName}` : 'Upload cover image from device'}
+                  </span>
+                  <input
+                    type="file"
+                    accept="image/jpeg,image/png,image/webp,image/gif"
+                    onChange={handleNewNewsImageFile}
+                  />
+                </label>
+
+                <input
+                  type="text"
+                  placeholder="Or paste cover image URL (https://... or /tnp-services.jpg)"
+                  value={newNewsImageUrl}
+                  onChange={(e) => {
+                    setNewNewsImageUrl(e.target.value);
+                    if (e.target.value.trim()) {
+                      setNewNewsImageDataUrl('');
+                      setNewNewsImageFileName('');
+                    }
+                  }}
+                />
+
+                {(newNewsImageDataUrl || isSafeImageSrc(newNewsImageUrl.trim())) && (
+                  <div className="admin-upload-preview">
+                    <img
+                      src={newNewsImageDataUrl || newNewsImageUrl.trim()}
+                      alt="Cover preview"
+                    />
+                    <button
+                      type="button"
+                      className="icon-btn"
+                      title="Clear cover image"
+                      onClick={() => {
+                        setNewNewsImageDataUrl('');
+                        setNewNewsImageFileName('');
+                        setNewNewsImageUrl('');
+                      }}
+                    >
+                      <X size={14} />
+                    </button>
+                  </div>
+                )}
+              </div>
+              <div className="admin-news-footer">
+                <label className="admin-checkbox-label">
+                  <input
+                    type="checkbox"
+                    checked={newNewsPublished}
+                    onChange={(e) => setNewNewsPublished(e.target.checked)}
+                  />
+                  <span>Publish immediately</span>
+                </label>
+                <button type="submit" className="primary" disabled={savingNews}>
+                  <Plus size={16} /> {savingNews ? 'Saving…' : newNewsPublished ? 'Publish post' : 'Save draft'}
+                </button>
+              </div>
+            </form>
+
+            {newsNotice && <div className="notice" style={{ marginBottom: 16 }}>{newsNotice}</div>}
+
+            {newsPosts.length === 0 ? (
+              <div className="admin-empty">
+                No Travel News posts yet. Share travel tips, visa updates, or announcements above.
+              </div>
+            ) : (
+              <div className="catalog-grid">
+                {newsPosts.map((post) => (
+                  <div key={post.id} className={`catalog-card admin-news-card ${post.published ? '' : 'inactive'}`}>
+                    {post.image_url && isSafeImageSrc(post.image_url) && (
+                      <div className="admin-news-thumb">
+                        <img src={post.image_url} alt={post.title} />
+                      </div>
+                    )}
+                    <div className="admin-news-meta">
+                      <div className="admin-news-badges">
+                        <span className="news-category-pill">{post.category}</span>
+                        <span className="muted">
+                          {new Date(post.published_at).toLocaleDateString()}
+                        </span>
+                      </div>
+                      <strong>{post.title}</strong>
+                      <p>{post.summary}</p>
+                    </div>
+                    <div className="row-actions">
+                      <button
+                        type="button"
+                        className="icon-btn"
+                        title="Edit post & image"
+                        onClick={() => openNewsEditor(post)}
+                      >
+                        <Pencil size={15} />
+                      </button>
+                      <button
+                        type="button"
+                        className={post.published ? 'toggle-btn active' : 'toggle-btn'}
+                        onClick={() => toggleNewsPublished(post)}
+                      >
+                        <CheckCircle2 size={15} /> {post.published ? 'Published' : 'Draft'}
+                      </button>
+                      <button
+                        type="button"
+                        className="icon-btn danger"
+                        title="Delete post"
+                        onClick={() => deleteNewsPost(post.id)}
+                      >
+                        <Trash2 size={15} />
+                      </button>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+        )}
+
         {tab === 'contact' && (
           <div className="admin-panel-card">
             {!settingsTableReady && (
@@ -1989,6 +2387,125 @@ export default function AdminPanel({
               </label>
               <button type="submit" className="primary wide" disabled={savingPic}>
                 {savingPic ? 'Saving…' : 'Save picture'}
+              </button>
+            </form>
+          </div>
+        </div>
+      )}
+
+      {editingNews && (
+        <div className="overlay" onClick={() => setEditingNews(null)}>
+          <div className="modal" onClick={(e) => e.stopPropagation()}>
+            <button type="button" className="close" onClick={() => setEditingNews(null)}>
+              <X />
+            </button>
+            <small className="eyebrow">TRAVEL NEWS</small>
+            <h2>
+              Update <i>article.</i>
+            </h2>
+            <p>Changes update immediately in the Travel News section on the public website.</p>
+            <form onSubmit={saveNewsEdit}>
+              {(editNewsImageDataUrl || isSafeImageSrc(editNewsImageUrl.trim())) && (
+                <div className="picture-modal-preview admin-news-modal-preview">
+                  <img
+                    src={editNewsImageDataUrl || editNewsImageUrl.trim()}
+                    alt={editNewsTitle || 'Article cover preview'}
+                  />
+                  <button
+                    type="button"
+                    className="admin-news-remove-img"
+                    onClick={() => {
+                      setEditNewsImageDataUrl('');
+                      setEditNewsImageFileName('');
+                      setEditNewsImageUrl('');
+                    }}
+                  >
+                    <Trash2 size={14} /> Remove image
+                  </button>
+                </div>
+              )}
+              <div className="fields">
+                <label>
+                  Headline
+                  <input
+                    required
+                    type="text"
+                    value={editNewsTitle}
+                    onChange={(e) => setEditNewsTitle(e.target.value)}
+                  />
+                </label>
+                <label>
+                  Category
+                  <select
+                    value={editNewsCategory}
+                    onChange={(e) => setEditNewsCategory(e.target.value as NewsCategory)}
+                  >
+                    {NEWS_CATEGORIES.map((cat) => (
+                      <option key={cat} value={cat}>
+                        {cat}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+              </div>
+              <label>
+                Short summary
+                <input
+                  required
+                  type="text"
+                  value={editNewsSummary}
+                  onChange={(e) => setEditNewsSummary(e.target.value)}
+                />
+              </label>
+              <label>
+                Full article content
+                <textarea
+                  rows={5}
+                  value={editNewsContent}
+                  onChange={(e) => setEditNewsContent(e.target.value)}
+                />
+              </label>
+              <label>
+                Upload cover image from device
+                <div className="admin-file-picker modal-file-picker">
+                  <Upload size={16} />
+                  <span>
+                    {editNewsImageFileName
+                      ? `New file: ${editNewsImageFileName}`
+                      : 'Choose a new JPG, PNG, WebP, or GIF'}
+                  </span>
+                  <input
+                    type="file"
+                    accept="image/jpeg,image/png,image/webp,image/gif"
+                    onChange={handleEditNewsImageFile}
+                  />
+                </div>
+              </label>
+              <label>
+                Or cover image URL (optional)
+                <input
+                  type="text"
+                  placeholder="https://... or /tnp-services.jpg"
+                  value={editNewsImageUrl}
+                  onChange={(e) => {
+                    setEditNewsImageUrl(e.target.value);
+                    if (e.target.value.trim()) {
+                      setEditNewsImageDataUrl('');
+                      setEditNewsImageFileName('');
+                    }
+                  }}
+                />
+              </label>
+              <label className="admin-checkbox-label" style={{ marginTop: 8 }}>
+                <input
+                  type="checkbox"
+                  checked={editNewsPublished}
+                  onChange={(e) => setEditNewsPublished(e.target.checked)}
+                />
+                <span>Published on public website</span>
+              </label>
+              <button type="submit" className="primary wide" disabled={updatingNews}>
+                {updatingNews ? 'Saving…' : 'Save article'}
               </button>
             </form>
           </div>

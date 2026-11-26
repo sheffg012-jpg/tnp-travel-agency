@@ -82,6 +82,29 @@ interface SitePictureRecord {
   updated_at: string;
 }
 
+const NEWS_CATEGORIES = [
+  'Travel Tip',
+  'Visa Update',
+  'Company News',
+  'Flight Alert',
+  'Destination Guide',
+] as const;
+type NewsCategory = (typeof NEWS_CATEGORIES)[number];
+
+interface TravelNewsRecord {
+  id: string;
+  title: string;
+  category: NewsCategory;
+  summary: string;
+  content: string;
+  image_url: string | null;
+  storage_path?: string | null;
+  published: boolean;
+  published_at: string;
+  created_at: string;
+  updated_at: string;
+}
+
 interface ClaimedAdmin {
   username: string;
   salt: string;
@@ -151,6 +174,7 @@ const socialLinks: SocialLinkRecord[] = [];
 let contactEmail = (process.env.VITE_CONTACT_EMAIL || 'agencytnptravel@gmail.com').trim();
 let whatsappNumber = (process.env.VITE_WHATSAPP_NUMBER || '250788697728').replace(/\D/g, '') || '250788697728';
 const pictureBlobs = new Map<string, { buffer: Buffer; mime: string }>();
+const newsBlobs = new Map<string, { buffer: Buffer; mime: string }>();
 const nowIso = new Date().toISOString();
 const sitePictures: SitePictureRecord[] = [
   {
@@ -222,6 +246,51 @@ const sitePictures: SitePictureRecord[] = [
     storage_path: null,
     active: true,
     sort_order: 6,
+    created_at: nowIso,
+    updated_at: nowIso,
+  },
+];
+
+const travelNews: TravelNewsRecord[] = [
+  {
+    id: 'news-1',
+    title: 'Visa Document Checklist for Europe, Canada & Dubai',
+    category: 'Visa Update',
+    summary:
+      'Prepare your passport validity, bank statements, and flight itinerary early to avoid embassy processing delays.',
+    content:
+      'Applying for a tourist, study, or business visa goes much faster when your documents are complete before your appointment.\n\n1. Ensure your passport is valid for at least 6 months beyond your planned return date and has at least two blank pages.\n2. Prepare clear hotel reservations, round-trip flight itineraries, and an updated travel insurance policy.\n3. Reach out to our Visa Assistance desk via WhatsApp or the booking form so our advisors can review your checklist before submission.',
+    image_url: '/tnp-services.jpg',
+    published: true,
+    published_at: new Date(Date.now() - 2 * 86400_000).toISOString(),
+    created_at: nowIso,
+    updated_at: nowIso,
+  },
+  {
+    id: 'news-2',
+    title: 'How Early Should You Book International Flights?',
+    category: 'Travel Tip',
+    summary:
+      'Booking 4 to 8 weeks ahead helps unlock better fares and flexible seat availability across peak travel months.',
+    content:
+      'International airline fares fluctuate quickly around school holidays, summer travel, and major business conferences.\n\nFor the best balance of price and routing convenience, we recommend sharing your preferred travel window 4 to 8 weeks before departure. Our ticketing team compares multiple carriers including RwandAir, Qatar Airways, Emirates, and Turkish Airlines to find reliable connections.',
+    image_url: '/tnp-air-ticketing.jpg',
+    published: true,
+    published_at: new Date(Date.now() - 5 * 86400_000).toISOString(),
+    created_at: nowIso,
+    updated_at: nowIso,
+  },
+  {
+    id: 'news-3',
+    title: '24/7 WhatsApp Support & Rwanda Gorilla Permit Assistance',
+    category: 'Company News',
+    summary:
+      'Need urgent flight changes, hotel bookings, or Volcanoes National Park permits? Our travel desk is ready to assist.',
+    content:
+      'TNP Travel Agency now offers streamlined trip coordination for air ticketing, visa preparation, car rentals, and Rwanda gorilla trekking permits in one place.\n\nSimply submit an inquiry on our website or message us directly on WhatsApp and receive personalized guidance and clear next steps from our team.',
+    image_url: '/tnp-social-campaigns.jpg',
+    published: true,
+    published_at: new Date(Date.now() - 9 * 86400_000).toISOString(),
     created_at: nowIso,
     updated_at: nowIso,
   },
@@ -606,12 +675,29 @@ function mapSupabasePicture(row: Record<string, unknown>): SitePictureRecord {
   };
 }
 
+function mapSupabaseNews(row: Record<string, unknown>): TravelNewsRecord {
+  const rawCategory = String(row.category || 'Travel Tip') as NewsCategory;
+  return {
+    id: String(row.id),
+    title: String(row.title || ''),
+    category: NEWS_CATEGORIES.includes(rawCategory) ? rawCategory : 'Travel Tip',
+    summary: String(row.summary || ''),
+    content: String(row.content || ''),
+    image_url: typeof row.image_url === 'string' && row.image_url.trim() ? row.image_url.trim() : null,
+    storage_path: row.storage_path ? String(row.storage_path) : null,
+    published: Boolean(row.published ?? true),
+    published_at: String(row.published_at || row.created_at || new Date().toISOString()),
+    created_at: String(row.created_at || new Date().toISOString()),
+    updated_at: String(row.updated_at || row.created_at || new Date().toISOString()),
+  };
+}
+
 async function uploadPictureToStorage(
   buffer: Buffer,
   mime: string,
   ext: string,
-  placement: PicturePlacement,
-  pictureId: string,
+  folder: PicturePlacement | 'news',
+  itemId: string,
 ): Promise<{ imageUrl: string; storagePath: string } | null> {
   if (!supabaseAdmin) return null;
   const bucketName = 'site-pictures';
@@ -625,7 +711,7 @@ async function uploadPictureToStorage(
       });
     }
 
-    const storagePath = `${placement}/${pictureId}-${Date.now()}.${ext}`;
+    const storagePath = `${folder}/${itemId}-${Date.now()}.${ext}`;
     const { error: uploadErr } = await supabaseAdmin.storage
       .from(bucketName)
       .upload(storagePath, buffer, { contentType: mime, upsert: true });
@@ -926,7 +1012,7 @@ export function createApiApp(): Express {
   const defaultJsonParser = express.json({ limit: '100kb' });
   const picturesJsonParser = express.json({ limit: '4mb' });
   app.use((req, res, next) => {
-    if (req.path.startsWith('/api/admin/pictures')) {
+    if (req.path.startsWith('/api/admin/pictures') || req.path.startsWith('/api/admin/news')) {
       picturesJsonParser(req, res, next);
       return;
     }
@@ -945,6 +1031,9 @@ export function createApiApp(): Express {
     let resolvedDestinations = destinations.filter((d) => d.active);
     let resolvedSocialLinks = socialLinks.filter((l) => l.active);
     let resolvedPictures = sitePictures.filter((p) => p.active);
+    let resolvedNews = travelNews
+      .filter((n) => n.published)
+      .sort((a, b) => Date.parse(b.published_at) - Date.parse(a.published_at));
     let resolvedContactEmail = contactEmail;
     let resolvedWhatsappNumber = whatsappNumber;
 
@@ -956,6 +1045,7 @@ export function createApiApp(): Express {
           { data: socRows, error: socErr },
           { data: picRows, error: picErr },
           { data: setRows, error: setErr },
+          { data: newsRows, error: newsErr },
         ] = await Promise.all([
           supabasePublic.from('services').select('*').eq('active', true).order('created_at', { ascending: true }),
           supabasePublic.from('destinations').select('*').eq('active', true).order('name', { ascending: true }),
@@ -970,6 +1060,12 @@ export function createApiApp(): Express {
             .from('site_settings')
             .select('key, value')
             .in('key', ['contact_email', 'whatsapp_number']),
+          supabasePublic
+            .from('travel_news')
+            .select('id, title, category, summary, content, image_url, published, published_at, created_at, updated_at')
+            .eq('published', true)
+            .order('published_at', { ascending: false })
+            .limit(24),
         ]);
 
         if (!svcErr && Array.isArray(svcRows) && svcRows.length > 0) {
@@ -999,6 +1095,9 @@ export function createApiApp(): Express {
             }
           }
         }
+        if (!newsErr && Array.isArray(newsRows)) {
+          resolvedNews = newsRows.map((r) => mapSupabaseNews(r as Record<string, unknown>));
+        }
       } catch {
         // Fall back to default/memory catalog if Supabase tables are not yet initialized
       }
@@ -1009,6 +1108,7 @@ export function createApiApp(): Express {
       destinations: resolvedDestinations,
       socialLinks: resolvedSocialLinks,
       pictures: resolvedPictures.map(({ storage_path: _sp, ...pub }) => pub),
+      news: resolvedNews.map(({ storage_path: _sp, ...pub }) => pub),
       settings: {
         contact_email: resolvedContactEmail,
         whatsapp_number: resolvedWhatsappNumber,
@@ -1043,6 +1143,57 @@ export function createApiApp(): Express {
           .maybeSingle();
 
         if (data && data.active !== false && typeof data.image_base64 === 'string' && data.image_base64) {
+          const mime =
+            typeof data.image_mime === 'string' && /^image\/(jpeg|png|webp|gif)$/i.test(data.image_mime)
+              ? data.image_mime
+              : 'image/jpeg';
+          const buf = Buffer.from(data.image_base64, 'base64');
+          res.setHeader('Content-Type', mime);
+          res.setHeader('Cache-Control', 'public, max-age=3600');
+          res.setHeader('X-Content-Type-Options', 'nosniff');
+          res.send(buf);
+          return;
+        }
+      } catch {
+        // Not found
+      }
+    }
+
+    res.status(404).end();
+  });
+
+  // Public image fallback endpoint for uploaded Travel News cover images when Storage bucket is unavailable
+  app.get('/api/news/:id/file', async (req, res) => {
+    const postId = cleanStr(req.params.id, 100);
+    if (!postId) {
+      res.status(400).end();
+      return;
+    }
+
+    const memBlob = newsBlobs.get(postId);
+    if (memBlob) {
+      const memPost = travelNews.find((n) => n.id === postId);
+      if (memPost && !memPost.published) {
+        res.status(404).end();
+        return;
+      }
+      res.setHeader('Content-Type', memBlob.mime);
+      res.setHeader('Cache-Control', 'public, max-age=3600');
+      res.setHeader('X-Content-Type-Options', 'nosniff');
+      res.send(memBlob.buffer);
+      return;
+    }
+
+    const dbClient = supabaseAdmin || supabasePublic;
+    if (dbClient) {
+      try {
+        const { data } = await dbClient
+          .from('travel_news')
+          .select('image_base64, image_mime, published')
+          .eq('id', postId)
+          .maybeSingle();
+
+        if (data && data.published !== false && typeof data.image_base64 === 'string' && data.image_base64) {
           const mime =
             typeof data.image_mime === 'string' && /^image\/(jpeg|png|webp|gif)$/i.test(data.image_mime)
               ? data.image_mime
@@ -2518,6 +2669,413 @@ export function createApiApp(): Express {
       },
       tableReady,
     });
+  });
+
+  // Admin travel news / blog posts management
+  app.get('/api/admin/news', requireAdmin, async (_req, res) => {
+    const dbClient = supabaseAdmin || supabasePublic;
+    if (dbClient) {
+      try {
+        const { data, error } = await dbClient
+          .from('travel_news')
+          .select('id, title, category, summary, content, image_url, published, published_at, created_at, updated_at')
+          .order('published_at', { ascending: false });
+
+        if (!error && Array.isArray(data)) {
+          res.json({
+            news: data.map((r) => mapSupabaseNews(r as Record<string, unknown>)),
+            tableReady: true,
+          });
+          return;
+        }
+      } catch {
+        // Fall back to memory if travel_news table is not created yet
+      }
+    }
+
+    res.json({
+      news: [...travelNews].sort((a, b) => Date.parse(b.published_at) - Date.parse(a.published_at)),
+      tableReady: !supabaseAdmin,
+    });
+  });
+
+  app.post('/api/admin/news', requireAdmin, async (req, res) => {
+    const title = cleanStr(req.body?.title, 160);
+    const summary = cleanStr(req.body?.summary, 420);
+    const rawContent = typeof req.body?.content === 'string' ? req.body.content.trim().slice(0, 6000) : '';
+    const content = rawContent || summary;
+    const rawCategory = cleanStr(req.body?.category, 40) as NewsCategory;
+    const category: NewsCategory = NEWS_CATEGORIES.includes(rawCategory) ? rawCategory : 'Travel Tip';
+    const published = typeof req.body?.published === 'boolean' ? req.body.published : true;
+
+    if (!title) {
+      res.status(400).json({ error: 'Article title is required.' });
+      return;
+    }
+    if (!summary) {
+      res.status(400).json({ error: 'Short summary is required.' });
+      return;
+    }
+
+    const parsedUpload = req.body?.imageDataUrl ? parseValidatedImageDataUrl(req.body.imageDataUrl) : null;
+    if (req.body?.imageDataUrl && !parsedUpload) {
+      res.status(400).json({
+        error: 'Uploaded image must be a valid JPG, PNG, WebP, or GIF file under 3MB.',
+      });
+      return;
+    }
+
+    const postId = crypto.randomUUID();
+    const now = new Date().toISOString();
+    let imageUrl: string | null = null;
+    let storagePath: string | null = null;
+    let fallbackBase64: string | null = null;
+    let fallbackMime: string | null = null;
+
+    if (parsedUpload) {
+      const uploaded = await uploadPictureToStorage(
+        parsedUpload.buffer,
+        parsedUpload.mime,
+        parsedUpload.ext,
+        'news',
+        postId,
+      );
+      if (uploaded) {
+        imageUrl = uploaded.imageUrl;
+        storagePath = uploaded.storagePath;
+      } else {
+        newsBlobs.set(postId, { buffer: parsedUpload.buffer, mime: parsedUpload.mime });
+        imageUrl = `/api/news/${postId}/file?v=${Date.now()}`;
+        fallbackBase64 = parsedUpload.buffer.toString('base64');
+        fallbackMime = parsedUpload.mime;
+      }
+    } else if (typeof req.body?.image_url === 'string' && req.body.image_url.trim()) {
+      const validated = validatePictureUrl(req.body.image_url);
+      if (!validated) {
+        res.status(400).json({ error: 'Please provide a valid image URL (https://..., http://..., or /...).' });
+        return;
+      }
+      imageUrl = validated;
+    }
+
+    if (supabaseAdmin) {
+      try {
+        let { data, error } = await supabaseAdmin
+          .from('travel_news')
+          .insert({
+            id: postId,
+            title,
+            category,
+            summary,
+            content,
+            image_url: imageUrl,
+            storage_path: storagePath,
+            image_base64: fallbackBase64,
+            image_mime: fallbackMime,
+            published,
+            published_at: now,
+          })
+          .select('id, title, category, summary, content, image_url, published, published_at, created_at, updated_at')
+          .single();
+
+        if (error && /column.*does not exist|schema cache/i.test(error.message || '') && !/relation.*travel_news/i.test(error.message || '')) {
+          // Graceful fallback if migration 009_travel_news_images.sql has not been run yet
+          ({ data, error } = await supabaseAdmin
+            .from('travel_news')
+            .insert({
+              id: postId,
+              title,
+              category,
+              summary,
+              content,
+              image_url: imageUrl,
+              published,
+              published_at: now,
+            })
+            .select('id, title, category, summary, content, image_url, published, published_at, created_at, updated_at')
+            .single());
+        }
+
+        if (!error && data) {
+          res.status(201).json({ post: mapSupabaseNews(data as Record<string, unknown>), tableReady: true });
+          return;
+        }
+        if (error && !/relation|does not exist|schema cache/i.test(error.message || '')) {
+          res.status(400).json({ error: error.message || 'Could not publish news post.' });
+          return;
+        }
+      } catch {
+        // Fall back to in-memory if migration 008 has not been run yet
+      }
+    }
+
+    const created: TravelNewsRecord = {
+      id: postId,
+      title,
+      category,
+      summary,
+      content,
+      image_url: imageUrl,
+      storage_path: storagePath,
+      published,
+      published_at: now,
+      created_at: now,
+      updated_at: now,
+    };
+    travelNews.unshift(created);
+    res.status(201).json({ post: created, tableReady: !supabaseAdmin });
+  });
+
+  app.patch('/api/admin/news/:id', requireAdmin, async (req, res) => {
+    const postId = cleanStr(req.params.id, 100);
+    const updates: Record<string, unknown> = {};
+
+    if (typeof req.body?.title === 'string') {
+      const title = cleanStr(req.body.title, 160);
+      if (!title) {
+        res.status(400).json({ error: 'Article title cannot be empty.' });
+        return;
+      }
+      updates.title = title;
+    }
+    if (typeof req.body?.summary === 'string') {
+      const summary = cleanStr(req.body.summary, 420);
+      if (!summary) {
+        res.status(400).json({ error: 'Short summary cannot be empty.' });
+        return;
+      }
+      updates.summary = summary;
+    }
+    if (typeof req.body?.content === 'string') {
+      updates.content = req.body.content.trim().slice(0, 6000);
+    }
+    if (typeof req.body?.category === 'string') {
+      const cat = cleanStr(req.body.category, 40) as NewsCategory;
+      if (!NEWS_CATEGORIES.includes(cat)) {
+        res.status(400).json({ error: 'Invalid news category.' });
+        return;
+      }
+      updates.category = cat;
+    }
+
+    const parsedUpload = req.body?.imageDataUrl ? parseValidatedImageDataUrl(req.body.imageDataUrl) : null;
+    if (req.body?.imageDataUrl && !parsedUpload) {
+      res.status(400).json({
+        error: 'Uploaded image must be a valid JPG, PNG, WebP, or GIF file under 3MB.',
+      });
+      return;
+    }
+
+    if (!parsedUpload && req.body?.image_url !== undefined) {
+      if (req.body.image_url === null || (typeof req.body.image_url === 'string' && !req.body.image_url.trim())) {
+        updates.image_url = null;
+        updates.storage_path = null;
+        updates.image_base64 = null;
+        updates.image_mime = null;
+      } else {
+        const validated = validatePictureUrl(req.body.image_url);
+        if (!validated) {
+          res.status(400).json({ error: 'Please provide a valid image URL (https://..., http://..., or /...).' });
+          return;
+        }
+        updates.image_url = validated;
+        updates.storage_path = null;
+        updates.image_base64 = null;
+        updates.image_mime = null;
+      }
+    }
+
+    if (typeof req.body?.published === 'boolean') {
+      updates.published = req.body.published;
+    }
+
+    if (!parsedUpload && Object.keys(updates).length === 0) {
+      res.status(400).json({ error: 'No valid update fields supplied.' });
+      return;
+    }
+
+    if (supabaseAdmin) {
+      try {
+        let existingStoragePath: string | null = null;
+        let existingFound = false;
+
+        const { data: existingWithStorage, error: findErr } = await supabaseAdmin
+          .from('travel_news')
+          .select('id, storage_path')
+          .eq('id', postId)
+          .maybeSingle();
+
+        if (!findErr && existingWithStorage) {
+          existingFound = true;
+          existingStoragePath = existingWithStorage.storage_path ? String(existingWithStorage.storage_path) : null;
+        } else if (findErr && /column.*storage_path|schema cache/i.test(findErr.message || '')) {
+          const { data: existingBasic, error: basicErr } = await supabaseAdmin
+            .from('travel_news')
+            .select('id')
+            .eq('id', postId)
+            .maybeSingle();
+          if (!basicErr && existingBasic) {
+            existingFound = true;
+          }
+        }
+
+        if (existingFound) {
+          if (parsedUpload) {
+            const uploaded = await uploadPictureToStorage(
+              parsedUpload.buffer,
+              parsedUpload.mime,
+              parsedUpload.ext,
+              'news',
+              postId,
+            );
+            if (uploaded) {
+              newsBlobs.delete(postId);
+              updates.image_url = uploaded.imageUrl;
+              updates.storage_path = uploaded.storagePath;
+              updates.image_base64 = null;
+              updates.image_mime = null;
+            } else {
+              newsBlobs.set(postId, { buffer: parsedUpload.buffer, mime: parsedUpload.mime });
+              updates.image_url = `/api/news/${postId}/file?v=${Date.now()}`;
+              updates.storage_path = null;
+              updates.image_base64 = parsedUpload.buffer.toString('base64');
+              updates.image_mime = parsedUpload.mime;
+            }
+            if (existingStoragePath) {
+              await removePictureFromStorage(existingStoragePath);
+            }
+          } else if (updates.image_url !== undefined) {
+            newsBlobs.delete(postId);
+            if (existingStoragePath) {
+              await removePictureFromStorage(existingStoragePath);
+            }
+          }
+
+          let { data, error } = await supabaseAdmin
+            .from('travel_news')
+            .update(updates)
+            .eq('id', postId)
+            .select('id, title, category, summary, content, image_url, published, published_at, created_at, updated_at')
+            .single();
+
+          if (error && /column.*does not exist|schema cache/i.test(error.message || '')) {
+            const { storage_path: _sp, image_base64: _b64, image_mime: _mime, ...legacyUpdates } = updates;
+            if (Object.keys(legacyUpdates).length > 0) {
+              ({ data, error } = await supabaseAdmin
+                .from('travel_news')
+                .update(legacyUpdates)
+                .eq('id', postId)
+                .select('id, title, category, summary, content, image_url, published, published_at, created_at, updated_at')
+                .single());
+            }
+          }
+
+          if (!error && data) {
+            res.json({ post: mapSupabaseNews(data as Record<string, unknown>), tableReady: true });
+            return;
+          }
+          if (error && !/relation|does not exist|schema cache/i.test(error.message || '')) {
+            res.status(error.code === 'PGRST116' ? 404 : 400).json({
+              error: error.code === 'PGRST116' ? 'News post not found.' : error.message || 'Could not update news post.',
+            });
+            return;
+          }
+        }
+      } catch {
+        // Fall through to in-memory
+      }
+    }
+
+    const target = travelNews.find((n) => n.id === postId);
+    if (!target) {
+      res.status(404).json({ error: 'News post not found.' });
+      return;
+    }
+
+    if (parsedUpload) {
+      const uploaded = await uploadPictureToStorage(
+        parsedUpload.buffer,
+        parsedUpload.mime,
+        parsedUpload.ext,
+        'news',
+        postId,
+      );
+      if (uploaded) {
+        if (target.storage_path) await removePictureFromStorage(target.storage_path);
+        newsBlobs.delete(postId);
+        target.image_url = uploaded.imageUrl;
+        target.storage_path = uploaded.storagePath;
+      } else {
+        newsBlobs.set(postId, { buffer: parsedUpload.buffer, mime: parsedUpload.mime });
+        target.image_url = `/api/news/${postId}/file?v=${Date.now()}`;
+        target.storage_path = null;
+      }
+    } else if (updates.image_url !== undefined) {
+      newsBlobs.delete(postId);
+      if (target.storage_path) {
+        await removePictureFromStorage(target.storage_path);
+      }
+      target.image_url = updates.image_url as string | null;
+      target.storage_path = null;
+    }
+
+    if (typeof updates.title === 'string') target.title = updates.title;
+    if (typeof updates.summary === 'string') target.summary = updates.summary;
+    if (typeof updates.content === 'string') target.content = updates.content || target.summary;
+    if (typeof updates.category === 'string') target.category = updates.category as NewsCategory;
+    if (typeof updates.published === 'boolean') {
+      if (!target.published && updates.published) {
+        target.published_at = new Date().toISOString();
+      }
+      target.published = updates.published;
+    }
+    target.updated_at = new Date().toISOString();
+    res.json({ post: target, tableReady: !supabaseAdmin });
+  });
+
+  app.delete('/api/admin/news/:id', requireAdmin, async (req, res) => {
+    const postId = cleanStr(req.params.id, 100);
+    newsBlobs.delete(postId);
+
+    if (supabaseAdmin) {
+      try {
+        let storagePath: string | null = null;
+        const { data: existing } = await supabaseAdmin
+          .from('travel_news')
+          .select('storage_path')
+          .eq('id', postId)
+          .maybeSingle();
+        if (existing?.storage_path) {
+          storagePath = String(existing.storage_path);
+        }
+
+        const { error } = await supabaseAdmin.from('travel_news').delete().eq('id', postId);
+        if (!error) {
+          if (storagePath) {
+            await removePictureFromStorage(storagePath);
+          }
+          res.json({ ok: true });
+          return;
+        }
+        if (!/relation|does not exist|schema cache/i.test(error.message || '')) {
+          res.status(400).json({ error: error.message || 'Could not delete news post.' });
+          return;
+        }
+      } catch {
+        // Fall through to in-memory
+      }
+    }
+
+    const idx = travelNews.findIndex((n) => n.id === postId);
+    if (idx === -1) {
+      res.status(404).json({ error: 'News post not found.' });
+      return;
+    }
+    const [removed] = travelNews.splice(idx, 1);
+    if (removed?.storage_path) {
+      await removePictureFromStorage(removed.storage_path);
+    }
+    res.json({ ok: true });
   });
 
   // Admin team accounts management (synced with Supabase Auth & public.admin_accounts)

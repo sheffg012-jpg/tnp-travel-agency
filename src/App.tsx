@@ -14,6 +14,7 @@ import {
   MapPinned,
   Menu,
   MessageCircle,
+  Newspaper,
   Plane,
   Send,
   ShieldCheck,
@@ -22,7 +23,11 @@ import {
   X,
   type LucideProps,
 } from 'lucide-react';
-import AdminPanel, { type SitePictureItem, type SocialLinkItem } from './components/AdminPanel';
+import AdminPanel, {
+  type SitePictureItem,
+  type SocialLinkItem,
+  type TravelNewsItem,
+} from './components/AdminPanel';
 import SocialPlatformIcon, { detectSocialPlatform } from './components/SocialPlatformIcon';
 import {
   SUPPORTED_LANGUAGES,
@@ -248,9 +253,11 @@ export default function App() {
   const [destinations, setDestinations] = useState<CatalogDestination[]>(DEFAULT_DESTINATIONS);
   const [socialLinks, setSocialLinks] = useState<SocialLinkItem[]>([]);
   const [pictures, setPictures] = useState<SitePictureItem[]>(DEFAULT_PICTURES);
+  const [newsPosts, setNewsPosts] = useState<TravelNewsItem[]>([]);
   const [contactEmail, setContactEmail] = useState<string>(DEFAULT_CONTACT_EMAIL);
   const [whatsappNumber, setWhatsappNumber] = useState<string>(DEFAULT_WHATSAPP_NUMBER);
   const [lightboxPicture, setLightboxPicture] = useState<SitePictureItem | null>(null);
+  const [activeNewsPost, setActiveNewsPost] = useState<TravelNewsItem | null>(null);
 
   useEffect(() => {
     persistLanguage(lang);
@@ -328,6 +335,7 @@ export default function App() {
         destinations?: CatalogDestination[];
         socialLinks?: SocialLinkItem[];
         pictures?: SitePictureItem[];
+        news?: TravelNewsItem[];
         settings?: { contact_email?: string; whatsapp_number?: string };
       };
       if (Array.isArray(data.services) && data.services.length > 0) {
@@ -341,6 +349,14 @@ export default function App() {
       }
       if (Array.isArray(data.pictures)) {
         setPictures(data.pictures.filter((p) => isSafeImageSrc(p.image_url)));
+      }
+      if (Array.isArray(data.news)) {
+        setNewsPosts(
+          data.news.map((post) => ({
+            ...post,
+            image_url: post.image_url && isSafeImageSrc(post.image_url) ? post.image_url : null,
+          })),
+        );
       }
       if (data.settings?.contact_email && /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(data.settings.contact_email.trim())) {
         setContactEmail(data.settings.contact_email.trim());
@@ -1014,6 +1030,7 @@ export default function App() {
               [t.nav.services, '#services'],
               [t.nav.destinations, '#destinations'],
               [t.nav.gallery, '#gallery'],
+              ...(newsPosts.length > 0 ? [[t.nav.news, '#news']] : []),
               [t.nav.about, '#about'],
               [t.nav.contact, '#contact'],
             ].map(([n, h]) => (
@@ -1256,6 +1273,56 @@ export default function App() {
           </section>
         )}
 
+        {newsPosts.length > 0 && (
+          <section className="section news-section" id="news">
+            <div className="section-title">
+              <div>
+                <small className="eyebrow">
+                  <Newspaper size={14} /> {t.news.eyebrow}
+                </small>
+                <h2>
+                  {t.news.titleLine1} <i>{t.news.titleAccent}</i>
+                </h2>
+              </div>
+              <p>{t.news.subtitle}</p>
+            </div>
+            <div className="news-grid">
+              {newsPosts.map((post) => {
+                const categoryLabel = t.news.categories[post.category] || post.category;
+                const formattedDate = new Date(post.published_at).toLocaleDateString(lang, {
+                  year: 'numeric',
+                  month: 'short',
+                  day: 'numeric',
+                });
+                return (
+                  <article key={post.id} className="news-card">
+                    {post.image_url && (
+                      <div className="news-media">
+                        <img src={post.image_url} alt={post.title} loading="lazy" />
+                      </div>
+                    )}
+                    <div className="news-body">
+                      <div className="news-meta-row">
+                        <span className="news-category-pill">{categoryLabel}</span>
+                        <time dateTime={post.published_at}>{formattedDate}</time>
+                      </div>
+                      <h3>{post.title}</h3>
+                      <p>{post.summary}</p>
+                      <button
+                        type="button"
+                        className="news-read-btn"
+                        onClick={() => setActiveNewsPost(post)}
+                      >
+                        {t.news.readMore} <ArrowRight size={15} />
+                      </button>
+                    </div>
+                  </article>
+                );
+              })}
+            </div>
+          </section>
+        )}
+
         <section className="contact" id="contact">
           <div>
             <small className="eyebrow">{t.contact.eyebrow}</small>
@@ -1477,6 +1544,58 @@ export default function App() {
               }}
             >
               {t.gallery.inquireItem} <ArrowRight size={16} />
+            </button>
+          </div>
+        </div>
+      )}
+      {activeNewsPost && (
+        <div className="overlay" onClick={() => setActiveNewsPost(null)}>
+          <div className="modal news-modal" onClick={(e) => e.stopPropagation()}>
+            <button
+              type="button"
+              className="close"
+              onClick={() => setActiveNewsPost(null)}
+              aria-label={t.news.closeLabel}
+            >
+              <X />
+            </button>
+            <div className="news-meta-row" style={{ marginBottom: 10 }}>
+              <span className="news-category-pill">
+                {t.news.categories[activeNewsPost.category] || activeNewsPost.category}
+              </span>
+              <time dateTime={activeNewsPost.published_at}>
+                {new Date(activeNewsPost.published_at).toLocaleDateString(lang, {
+                  year: 'numeric',
+                  month: 'long',
+                  day: 'numeric',
+                })}
+              </time>
+            </div>
+            <h2>{activeNewsPost.title}</h2>
+            {activeNewsPost.image_url && (
+              <div className="news-modal-img">
+                <img src={activeNewsPost.image_url} alt={activeNewsPost.title} />
+              </div>
+            )}
+            <div className="news-modal-content">
+              {(activeNewsPost.content || activeNewsPost.summary)
+                .split(/\n+/)
+                .map((para) => para.trim())
+                .filter(Boolean)
+                .map((para, idx) => (
+                  <p key={idx}>{para}</p>
+                ))}
+            </div>
+            <button
+              type="button"
+              className="primary"
+              onClick={() => {
+                setField('details', `${t.news.regardingPrefix} ${activeNewsPost.title}`);
+                setActiveNewsPost(null);
+                setBooking(true);
+              }}
+            >
+              {t.news.inquireAbout} <ArrowRight size={16} />
             </button>
           </div>
         </div>

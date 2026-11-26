@@ -29,6 +29,7 @@ export interface TranslationDict {
     services: string;
     destinations: string;
     gallery: string;
+    news: string;
     about: string;
     contact: string;
     bookNow: string;
@@ -87,6 +88,17 @@ export interface TranslationDict {
     inquireItem: string;
     regardingPrefix: string;
   };
+  news: {
+    eyebrow: string;
+    titleLine1: string;
+    titleAccent: string;
+    subtitle: string;
+    readMore: string;
+    closeLabel: string;
+    inquireAbout: string;
+    regardingPrefix: string;
+    categories: Record<string, string>;
+  };
   contact: {
     eyebrow: string;
     titleLine1: string;
@@ -133,6 +145,7 @@ export const TRANSLATIONS: Record<LanguageCode, TranslationDict> = {
       services: 'Services',
       destinations: 'Destinations',
       gallery: 'Gallery',
+      news: 'Travel News',
       about: 'About',
       contact: 'Contact',
       bookNow: 'Book now',
@@ -214,6 +227,23 @@ export const TRANSLATIONS: Record<LanguageCode, TranslationDict> = {
       inquireItem: 'Inquire about this',
       regardingPrefix: 'Regarding:',
     },
+    news: {
+      eyebrow: 'TRAVEL NEWS & TIPS',
+      titleLine1: 'Updates &',
+      titleAccent: 'travel insights.',
+      subtitle: 'Latest visa updates, airline tips, and announcements from TNP Travel Agency.',
+      readMore: 'Read article',
+      closeLabel: 'Close article',
+      inquireAbout: 'Ask our team about this',
+      regardingPrefix: 'Regarding news:',
+      categories: {
+        'Travel Tip': 'Travel Tip',
+        'Visa Update': 'Visa Update',
+        'Company News': 'Company News',
+        'Flight Alert': 'Flight Alert',
+        'Destination Guide': 'Destination Guide',
+      },
+    },
     contact: {
       eyebrow: "LET'S GET YOU MOVING",
       titleLine1: 'Have a trip',
@@ -259,6 +289,7 @@ export const TRANSLATIONS: Record<LanguageCode, TranslationDict> = {
       services: 'Services',
       destinations: 'Destinations',
       gallery: 'Galerie',
+      news: 'Actualités',
       about: 'À propos',
       contact: 'Contact',
       bookNow: 'Réserver',
@@ -340,6 +371,23 @@ export const TRANSLATIONS: Record<LanguageCode, TranslationDict> = {
       inquireItem: 'Demander des infos',
       regardingPrefix: 'Concernant :',
     },
+    news: {
+      eyebrow: 'ACTUALITÉS & CONSEILS',
+      titleLine1: 'Infos voyage &',
+      titleAccent: 'mises à jour.',
+      subtitle: 'Dernières actualités visa, conseils de vol et annonces de TNP Travel Agency.',
+      readMore: 'Lire l’article',
+      closeLabel: 'Fermer l’article',
+      inquireAbout: 'Poser une question à notre équipe',
+      regardingPrefix: 'À propos de l’article :',
+      categories: {
+        'Travel Tip': 'Conseil voyage',
+        'Visa Update': 'Info visa',
+        'Company News': 'Actualité TNP',
+        'Flight Alert': 'Alerte vol',
+        'Destination Guide': 'Guide destination',
+      },
+    },
     contact: {
       eyebrow: 'PASSONS À L’ACTION',
       titleLine1: 'Un voyage',
@@ -385,6 +433,7 @@ export const TRANSLATIONS: Record<LanguageCode, TranslationDict> = {
       services: 'Serivisi',
       destinations: 'Ibyerekezo',
       gallery: 'Amafoto',
+      news: 'Amakuru',
       about: 'Abo turi bo',
       contact: 'Twandikire',
       bookNow: 'Saba ubu',
@@ -466,6 +515,23 @@ export const TRANSLATIONS: Record<LanguageCode, TranslationDict> = {
       inquireItem: 'Baza kuri ibi',
       regardingPrefix: 'Bijyanye na:',
     },
+    news: {
+      eyebrow: 'AMAKURU N’INAMA Z’INGENDO',
+      titleLine1: 'Amakuru mashya',
+      titleAccent: 'ku ngendo.',
+      subtitle: 'Amakuru ya viza, inama z’amatike y’indege n’amatangazo ya TNP Travel Agency.',
+      readMore: 'Soma byose',
+      closeLabel: 'Funga inkuru',
+      inquireAbout: 'Baza ikipe yacu kuri ibi',
+      regardingPrefix: 'Bijyanye n’amakuru:',
+      categories: {
+        'Travel Tip': 'Inama y’urugendo',
+        'Visa Update': 'Amakuru ya Viza',
+        'Company News': 'Amakuru ya TNP',
+        'Flight Alert': 'Amakuru y’indege',
+        'Destination Guide': 'Ubuhamya bw’ibyerekezo',
+      },
+    },
     contact: {
       eyebrow: 'REKA TUGUHAGURUTSE',
       titleLine1: 'Ufite urugendo',
@@ -511,6 +577,7 @@ export const TRANSLATIONS: Record<LanguageCode, TranslationDict> = {
       services: 'Huduma',
       destinations: 'Maeneo',
       gallery: 'Picha',
+      news: 'Habari',
       about: 'Kuhusu',
       contact: 'Wasiliana',
       bookNow: 'Agiza sasa',
@@ -592,6 +659,23 @@ export const TRANSLATIONS: Record<LanguageCode, TranslationDict> = {
       inquireItem: 'Ulizia kuhusu hili',
       regardingPrefix: 'Kuhusu:',
     },
+    news: {
+      eyebrow: 'HABARI NA VIDOKEZO VYA SAFARI',
+      titleLine1: 'Taarifa mpya',
+      titleAccent: 'za safari.',
+      subtitle: 'Taarifa za viza, vidokezo vya ndege na matangazo mapya kutoka TNP Travel Agency.',
+      readMore: 'Soma makala',
+      closeLabel: 'Funga makala',
+      inquireAbout: 'Uliza timu yetu kuhusu hili',
+      regardingPrefix: 'Kuhusu habari:',
+      categories: {
+        'Travel Tip': 'Kidokezo cha Safari',
+        'Visa Update': 'Taarifa ya Viza',
+        'Company News': 'Habari za TNP',
+        'Flight Alert': 'Taarifa ya Ndege',
+        'Destination Guide': 'Mwongozo wa Eneo',
+      },
+    },
     contact: {
       eyebrow: 'TUKUANZISHE SAFARI',
       titleLine1: 'Una safari',
@@ -637,6 +721,7 @@ export const TRANSLATIONS: Record<LanguageCode, TranslationDict> = {
       services: 'الخدمات',
       destinations: 'الوجهات',
       gallery: 'المعرض',
+      news: 'أخبار السفر',
       about: 'من نحن',
       contact: 'اتصل بنا',
       bookNow: 'احجز الآن',
@@ -718,6 +803,23 @@ export const TRANSLATIONS: Record<LanguageCode, TranslationDict> = {
       inquireItem: 'استفسر عن هذا العرض',
       regardingPrefix: 'بخصوص:',
     },
+    news: {
+      eyebrow: 'أخبار ونصائح السفر',
+      titleLine1: 'تحديثات',
+      titleAccent: 'ومقالات السفر.',
+      subtitle: 'أحدث مستجدات التأشيرات ونصائح الطيران وإعلانات وكالة TNP للسفر.',
+      readMore: 'اقرأ المقال',
+      closeLabel: 'إغلاق المقال',
+      inquireAbout: 'اسأل فريقنا عن هذا الموضوع',
+      regardingPrefix: 'بخصوص الخبر:',
+      categories: {
+        'Travel Tip': 'نصيحة سفر',
+        'Visa Update': 'تحديث التأشيرات',
+        'Company News': 'أخبار الوكالة',
+        'Flight Alert': 'تنبيه رحلات',
+        'Destination Guide': 'دليل الوجهات',
+      },
+    },
     contact: {
       eyebrow: 'لننطلق برحلتك',
       titleLine1: 'هل تفكر في',
@@ -763,6 +865,7 @@ export const TRANSLATIONS: Record<LanguageCode, TranslationDict> = {
       services: 'Servicios',
       destinations: 'Destinos',
       gallery: 'Galería',
+      news: 'Noticias',
       about: 'Nosotros',
       contact: 'Contacto',
       bookNow: 'Reservar',
@@ -844,6 +947,23 @@ export const TRANSLATIONS: Record<LanguageCode, TranslationDict> = {
       inquireItem: 'Consultar sobre esto',
       regardingPrefix: 'Sobre:',
     },
+    news: {
+      eyebrow: 'NOTICIAS Y CONSEJOS',
+      titleLine1: 'Novedades y',
+      titleAccent: 'guías de viaje.',
+      subtitle: 'Últimas actualizaciones de visas, consejos de vuelo y noticias de TNP Travel Agency.',
+      readMore: 'Leer artículo',
+      closeLabel: 'Cerrar artículo',
+      inquireAbout: 'Consultar al equipo',
+      regardingPrefix: 'Sobre noticia:',
+      categories: {
+        'Travel Tip': 'Consejo de viaje',
+        'Visa Update': 'Aviso de visa',
+        'Company News': 'Noticias TNP',
+        'Flight Alert': 'Alerta de vuelo',
+        'Destination Guide': 'Guía de destino',
+      },
+    },
     contact: {
       eyebrow: 'PONGÁMONOS EN MARCHA',
       titleLine1: '¿Tienes un viaje',
@@ -889,6 +1009,7 @@ export const TRANSLATIONS: Record<LanguageCode, TranslationDict> = {
       services: 'Leistungen',
       destinations: 'Reiseziele',
       gallery: 'Galerie',
+      news: 'Reisenews',
       about: 'Über uns',
       contact: 'Kontakt',
       bookNow: 'Jetzt buchen',
@@ -970,6 +1091,23 @@ export const TRANSLATIONS: Record<LanguageCode, TranslationDict> = {
       inquireItem: 'Dazu anfragen',
       regardingPrefix: 'Betreff:',
     },
+    news: {
+      eyebrow: 'REISENEWS & TIPPS',
+      titleLine1: 'Neuigkeiten &',
+      titleAccent: 'Reisetipps.',
+      subtitle: 'Aktuelle Visa-Hinweise, Flugtipps und Ankündigungen von TNP Travel Agency.',
+      readMore: 'Beitrag lesen',
+      closeLabel: 'Beitrag schließen',
+      inquireAbout: 'Unser Team dazu fragen',
+      regardingPrefix: 'Bezüglich Beitrag:',
+      categories: {
+        'Travel Tip': 'Reisetipp',
+        'Visa Update': 'Visa-Update',
+        'Company News': 'TNP News',
+        'Flight Alert': 'Flug-Hinweis',
+        'Destination Guide': 'Reiseziel-Guide',
+      },
+    },
     contact: {
       eyebrow: 'STARTEN WIR GEMEINSAM',
       titleLine1: 'Haben Sie eine Reise',
@@ -1015,6 +1153,7 @@ export const TRANSLATIONS: Record<LanguageCode, TranslationDict> = {
       services: 'Serviços',
       destinations: 'Destinos',
       gallery: 'Galeria',
+      news: 'Notícias',
       about: 'Sobre',
       contact: 'Contato',
       bookNow: 'Reservar',
@@ -1096,6 +1235,23 @@ export const TRANSLATIONS: Record<LanguageCode, TranslationDict> = {
       inquireItem: 'Consultar sobre isto',
       regardingPrefix: 'Sobre:',
     },
+    news: {
+      eyebrow: 'NOTÍCIAS E DICAS',
+      titleLine1: 'Novidades e',
+      titleAccent: 'dicas de viagem.',
+      subtitle: 'Atualizações de visto, dicas de voos e comunicados da TNP Travel Agency.',
+      readMore: 'Ler artigo',
+      closeLabel: 'Fechar artigo',
+      inquireAbout: 'Falar com a equipe sobre isto',
+      regardingPrefix: 'Sobre a notícia:',
+      categories: {
+        'Travel Tip': 'Dica de Viagem',
+        'Visa Update': 'Aviso de Visto',
+        'Company News': 'Notícias TNP',
+        'Flight Alert': 'Alerta de Voo',
+        'Destination Guide': 'Guia de Destino',
+      },
+    },
     contact: {
       eyebrow: 'VAMOS COLOCAR VOCÊ EM MOVIMENTO',
       titleLine1: 'Tem uma viagem',
@@ -1141,6 +1297,7 @@ export const TRANSLATIONS: Record<LanguageCode, TranslationDict> = {
       services: '服务',
       destinations: '目的地',
       gallery: '图库',
+      news: '旅行资讯',
       about: '关于我们',
       contact: '联系我们',
       bookNow: '立即预订',
@@ -1217,6 +1374,23 @@ export const TRANSLATIONS: Record<LanguageCode, TranslationDict> = {
       inquireItem: '咨询此项目',
       regardingPrefix: '咨询项目：',
     },
+    news: {
+      eyebrow: '旅行资讯与贴士',
+      titleLine1: '最新动态',
+      titleAccent: '与出行指南。',
+      subtitle: '来自 TNP Travel Agency 的最新签证动态、机票贴士与公司公告。',
+      readMore: '阅读全文',
+      closeLabel: '关闭文章',
+      inquireAbout: '向团队咨询此动态',
+      regardingPrefix: '关于资讯：',
+      categories: {
+        'Travel Tip': '旅行贴士',
+        'Visa Update': '签证动态',
+        'Company News': '公司公告',
+        'Flight Alert': '航班提醒',
+        'Destination Guide': '目的地指南',
+      },
+    },
     contact: {
       eyebrow: '立即启程',
       titleLine1: '已有心仪的',
@@ -1262,6 +1436,7 @@ export const TRANSLATIONS: Record<LanguageCode, TranslationDict> = {
       services: 'सेवाएँ',
       destinations: 'गंतव्य',
       gallery: 'गैलरी',
+      news: 'यात्रा समाचार',
       about: 'हमारे बारे में',
       contact: 'संपर्क करें',
       bookNow: 'अभी बुक करें',
@@ -1342,6 +1517,23 @@ export const TRANSLATIONS: Record<LanguageCode, TranslationDict> = {
       subtitle: 'हमारी टीम द्वारा साझा किए गए गंतव्य, यात्रा पोस्टर और नवीनतम अपडेट देखें।',
       inquireItem: 'इस बारे में पूछें',
       regardingPrefix: 'विषय:',
+    },
+    news: {
+      eyebrow: 'यात्रा समाचार और सुझाव',
+      titleLine1: 'नवीनतम अपडेट',
+      titleAccent: 'और यात्रा सुझाव।',
+      subtitle: 'TNP Travel Agency की ओर से वीज़ा अपडेट, फ्लाइट टिप्स और ताज़ा घोषणाएँ।',
+      readMore: 'लेख पढ़ें',
+      closeLabel: 'लेख बंद करें',
+      inquireAbout: 'हमारी टीम से इस बारे में पूछें',
+      regardingPrefix: 'समाचार विषय:',
+      categories: {
+        'Travel Tip': 'यात्रा सुझाव',
+        'Visa Update': 'वीज़ा अपडेट',
+        'Company News': 'कंपनी समाचार',
+        'Flight Alert': 'फ्लाइट सूचना',
+        'Destination Guide': 'गंतव्य गाइड',
+      },
     },
     contact: {
       eyebrow: 'चलिए सफर शुरू करें',
