@@ -383,14 +383,14 @@ export default function AdminPanel({
     setError('');
     try {
       const [bRes, sRes, dRes, socRes, picRes, setRes, newsRes, usrRes] = await Promise.all([
-        fetch('/api/admin/bookings', { headers: { Authorization: `Bearer ${token}` } }),
-        fetch('/api/admin/services', { headers: { Authorization: `Bearer ${token}` } }),
-        fetch('/api/admin/destinations', { headers: { Authorization: `Bearer ${token}` } }),
-        fetch('/api/admin/social-links', { headers: { Authorization: `Bearer ${token}` } }),
-        fetch('/api/admin/pictures', { headers: { Authorization: `Bearer ${token}` } }),
-        fetch('/api/admin/settings', { headers: { Authorization: `Bearer ${token}` } }),
-        fetch('/api/admin/news', { headers: { Authorization: `Bearer ${token}` } }),
-        fetch('/api/admin/users', { headers: { Authorization: `Bearer ${token}` } }),
+        fetch('/api/admin/bookings', { headers: { Authorization: `Bearer ${token}` }, cache: 'no-store' }),
+        fetch('/api/admin/services', { headers: { Authorization: `Bearer ${token}` }, cache: 'no-store' }),
+        fetch('/api/admin/destinations', { headers: { Authorization: `Bearer ${token}` }, cache: 'no-store' }),
+        fetch('/api/admin/social-links', { headers: { Authorization: `Bearer ${token}` }, cache: 'no-store' }),
+        fetch('/api/admin/pictures', { headers: { Authorization: `Bearer ${token}` }, cache: 'no-store' }),
+        fetch('/api/admin/settings', { headers: { Authorization: `Bearer ${token}` }, cache: 'no-store' }),
+        fetch('/api/admin/news', { headers: { Authorization: `Bearer ${token}` }, cache: 'no-store' }),
+        fetch('/api/admin/users', { headers: { Authorization: `Bearer ${token}` }, cache: 'no-store' }),
       ]);
 
       if (
@@ -430,7 +430,7 @@ export default function AdminPanel({
         : { settings: undefined, tableReady: true };
       const newsData = newsRes.ok
         ? ((await newsRes.json()) as { news?: TravelNewsItem[]; tableReady?: boolean })
-        : { news: [], tableReady: true };
+        : { news: [], tableReady: false };
       const usrData = usrRes.ok ? ((await usrRes.json()) as { users?: AdminUserItem[] }) : { users: [] };
 
       setBookings(bData.bookings);

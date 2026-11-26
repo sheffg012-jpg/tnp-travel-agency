@@ -1096,13 +1096,23 @@ export function createApiApp(): Express {
           }
         }
         if (!newsErr && Array.isArray(newsRows)) {
-          resolvedNews = newsRows.map((r) => mapSupabaseNews(r as Record<string, unknown>));
+          if (newsRows.length > 0) {
+            resolvedNews = newsRows.map((r) => mapSupabaseNews(r as Record<string, unknown>));
+          } else if (supabaseAdmin) {
+            const { count } = await supabaseAdmin
+              .from('travel_news')
+              .select('id', { count: 'exact', head: true });
+            if (typeof count === 'number' && count > 0) {
+              resolvedNews = [];
+            }
+          }
         }
       } catch {
         // Fall back to default/memory catalog if Supabase tables are not yet initialized
       }
     }
 
+    res.setHeader('Cache-Control', 'no-store');
     res.json({
       services: resolvedServices,
       destinations: resolvedDestinations,

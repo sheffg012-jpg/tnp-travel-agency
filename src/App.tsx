@@ -144,6 +144,60 @@ const DEFAULT_PICTURES: SitePictureItem[] = [
   },
 ];
 
+const DEFAULT_NEWS: TravelNewsItem[] = [
+  {
+    id: 'news-1',
+    title: 'Visa Document Checklist for Europe, Canada & Dubai',
+    category: 'Visa Update',
+    summary:
+      'Prepare your passport validity, bank statements, and flight itinerary early to avoid embassy processing delays.',
+    content:
+      'Applying for a tourist, study, or business visa goes much faster when your documents are complete before your appointment.\n\n1. Ensure your passport is valid for at least 6 months beyond your planned return date and has at least two blank pages.\n2. Prepare clear hotel reservations, round-trip flight itineraries, and an updated travel insurance policy.\n3. Reach out to our Visa Assistance desk via WhatsApp or the booking form so our advisors can review your checklist before submission.',
+    image_url: '/tnp-services.jpg',
+    published: true,
+    published_at: new Date(Date.now() - 2 * 86400_000).toISOString(),
+  },
+  {
+    id: 'news-2',
+    title: 'How Early Should You Book International Flights?',
+    category: 'Travel Tip',
+    summary:
+      'Booking 4 to 8 weeks ahead helps unlock better fares and flexible seat availability across peak travel months.',
+    content:
+      'International airline fares fluctuate quickly around school holidays, summer travel, and major business conferences.\n\nFor the best balance of price and routing convenience, we recommend sharing your preferred travel window 4 to 8 weeks before departure. Our ticketing team compares multiple carriers including RwandAir, Qatar Airways, Emirates, and Turkish Airlines to find reliable connections.',
+    image_url: '/tnp-air-ticketing.jpg',
+    published: true,
+    published_at: new Date(Date.now() - 5 * 86400_000).toISOString(),
+  },
+  {
+    id: 'news-3',
+    title: '24/7 WhatsApp Support & Rwanda Gorilla Permit Assistance',
+    category: 'Company News',
+    summary:
+      'Need urgent flight changes, hotel bookings, or Volcanoes National Park permits? Our travel desk is ready to assist.',
+    content:
+      'TNP Travel Agency now offers streamlined trip coordination for air ticketing, visa preparation, car rentals, and Rwanda gorilla trekking permits in one place.\n\nSimply submit an inquiry on our website or message us directly on WhatsApp and receive personalized guidance and clear next steps from our team.',
+    image_url: '/tnp-social-campaigns.jpg',
+    published: true,
+    published_at: new Date(Date.now() - 9 * 86400_000).toISOString(),
+  },
+];
+
+function formatNewsDate(iso: string, lang: LanguageCode, longMonth = false): string {
+  const parsed = new Date(iso);
+  if (Number.isNaN(parsed.getTime())) return '';
+  const opts: Intl.DateTimeFormatOptions = {
+    year: 'numeric',
+    month: longMonth ? 'long' : 'short',
+    day: 'numeric',
+  };
+  try {
+    return parsed.toLocaleDateString(lang, opts);
+  } catch {
+    return parsed.toLocaleDateString('en', opts);
+  }
+}
+
 function isSafeHttpUrl(rawUrl: string): boolean {
   try {
     const parsed = new URL(rawUrl);
@@ -253,7 +307,7 @@ export default function App() {
   const [destinations, setDestinations] = useState<CatalogDestination[]>(DEFAULT_DESTINATIONS);
   const [socialLinks, setSocialLinks] = useState<SocialLinkItem[]>([]);
   const [pictures, setPictures] = useState<SitePictureItem[]>(DEFAULT_PICTURES);
-  const [newsPosts, setNewsPosts] = useState<TravelNewsItem[]>([]);
+  const [newsPosts, setNewsPosts] = useState<TravelNewsItem[]>(DEFAULT_NEWS);
   const [contactEmail, setContactEmail] = useState<string>(DEFAULT_CONTACT_EMAIL);
   const [whatsappNumber, setWhatsappNumber] = useState<string>(DEFAULT_WHATSAPP_NUMBER);
   const [lightboxPicture, setLightboxPicture] = useState<SitePictureItem | null>(null);
@@ -328,47 +382,73 @@ export default function App() {
 
   const fetchCatalog = useCallback(async () => {
     try {
-      const res = await fetch('/api/catalog');
-      if (!res.ok) return;
-      const data = (await res.json()) as {
-        services?: CatalogService[];
-        destinations?: CatalogDestination[];
-        socialLinks?: SocialLinkItem[];
-        pictures?: SitePictureItem[];
-        news?: TravelNewsItem[];
-        settings?: { contact_email?: string; whatsapp_number?: string };
-      };
-      if (Array.isArray(data.services) && data.services.length > 0) {
-        setServices(data.services);
-      }
-      if (Array.isArray(data.destinations) && data.destinations.length > 0) {
-        setDestinations(data.destinations);
-      }
-      if (Array.isArray(data.socialLinks)) {
-        setSocialLinks(data.socialLinks.filter((l) => isSafeHttpUrl(l.url)));
-      }
-      if (Array.isArray(data.pictures)) {
-        setPictures(data.pictures.filter((p) => isSafeImageSrc(p.image_url)));
-      }
-      if (Array.isArray(data.news)) {
-        setNewsPosts(
-          data.news.map((post) => ({
-            ...post,
-            image_url: post.image_url && isSafeImageSrc(post.image_url) ? post.image_url : null,
-          })),
-        );
-      }
-      if (data.settings?.contact_email && /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(data.settings.contact_email.trim())) {
-        setContactEmail(data.settings.contact_email.trim());
-      }
-      if (data.settings?.whatsapp_number) {
-        const cleanDigits = data.settings.whatsapp_number.replace(/\D/g, '');
-        if (cleanDigits.length >= 7) {
-          setWhatsappNumber(cleanDigits);
+      const res = await fetch('/api/catalog', { cache: 'no-store' });
+      if (res.ok) {
+        const data = (await res.json()) as {
+          services?: CatalogService[];
+          destinations?: CatalogDestination[];
+          socialLinks?: SocialLinkItem[];
+          pictures?: SitePictureItem[];
+          news?: TravelNewsItem[];
+          settings?: { contact_email?: string; whatsapp_number?: string };
+        };
+        if (Array.isArray(data.services) && data.services.length > 0) {
+          setServices(data.services);
         }
+        if (Array.isArray(data.destinations) && data.destinations.length > 0) {
+          setDestinations(data.destinations);
+        }
+        if (Array.isArray(data.socialLinks)) {
+          setSocialLinks(data.socialLinks.filter((l) => isSafeHttpUrl(l.url)));
+        }
+        if (Array.isArray(data.pictures)) {
+          setPictures(data.pictures.filter((p) => isSafeImageSrc(p.image_url)));
+        }
+        if (Array.isArray(data.news)) {
+          setNewsPosts(
+            data.news.map((post) => ({
+              ...post,
+              image_url: post.image_url && isSafeImageSrc(post.image_url) ? post.image_url : null,
+            })),
+          );
+        }
+        if (data.settings?.contact_email && /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(data.settings.contact_email.trim())) {
+          setContactEmail(data.settings.contact_email.trim());
+        }
+        if (data.settings?.whatsapp_number) {
+          const cleanDigits = data.settings.whatsapp_number.replace(/\D/g, '');
+          if (cleanDigits.length >= 7) {
+            setWhatsappNumber(cleanDigits);
+          }
+        }
+        return;
       }
     } catch {
-      // Keep default catalog if server is restarting
+      // Fall back to direct Supabase read or default catalog below
+    }
+
+    if (db) {
+      try {
+        const { data: newsRows } = await db
+          .from('travel_news')
+          .select('id, title, category, summary, content, image_url, published, published_at, created_at, updated_at')
+          .eq('published', true)
+          .order('published_at', { ascending: false })
+          .limit(24);
+        if (Array.isArray(newsRows) && newsRows.length > 0) {
+          setNewsPosts(
+            newsRows.map((row) => {
+              const r = row as TravelNewsItem;
+              return {
+                ...r,
+                image_url: r.image_url && isSafeImageSrc(r.image_url) ? r.image_url : null,
+              };
+            }),
+          );
+        }
+      } catch {
+        // Keep DEFAULT_NEWS
+      }
     }
   }, []);
 
@@ -1289,11 +1369,7 @@ export default function App() {
             <div className="news-grid">
               {newsPosts.map((post) => {
                 const categoryLabel = t.news.categories[post.category] || post.category;
-                const formattedDate = new Date(post.published_at).toLocaleDateString(lang, {
-                  year: 'numeric',
-                  month: 'short',
-                  day: 'numeric',
-                });
+                const formattedDate = formatNewsDate(post.published_at, lang);
                 return (
                   <article key={post.id} className="news-card">
                     {post.image_url && (
@@ -1564,11 +1640,7 @@ export default function App() {
                 {t.news.categories[activeNewsPost.category] || activeNewsPost.category}
               </span>
               <time dateTime={activeNewsPost.published_at}>
-                {new Date(activeNewsPost.published_at).toLocaleDateString(lang, {
-                  year: 'numeric',
-                  month: 'long',
-                  day: 'numeric',
-                })}
+                {formatNewsDate(activeNewsPost.published_at, lang, true)}
               </time>
             </div>
             <h2>{activeNewsPost.title}</h2>
